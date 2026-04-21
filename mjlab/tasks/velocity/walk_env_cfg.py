@@ -175,3 +175,11 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.events.pop("encoder_bias", None)
 
     return cfg
+
+
+# python scripts/train.py Mjlab-Walk-Unitree-G1 \
+#   --env.scene.num-envs=4096 \
+#   --agent.resume=True \
+#   --agent.load_run=2026-04-21_10-08-05 \
+#   --agent.load_checkpoint=model_10000.pt \
+#   --agent.max_iterations=30000
