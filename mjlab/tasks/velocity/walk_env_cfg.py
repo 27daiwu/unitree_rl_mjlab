@@ -23,14 +23,14 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # 2) 命令
     twist_cmd = cfg.commands["twist"]
-    twist_cmd.resampling_time_range = (5.5, 8.5)
-    twist_cmd.rel_standing_envs = 0.10
-    twist_cmd.rel_heading_envs = 0.22
-    twist_cmd.heading_control_stiffness = 0.50
+    twist_cmd.resampling_time_range = (6.0, 9.0)
+    twist_cmd.rel_standing_envs = 0.20
+    twist_cmd.rel_heading_envs = 0.20
+    twist_cmd.heading_control_stiffness = 0.48
 
-    twist_cmd.ranges.lin_vel_x = (-0.40, 0.70)
+    twist_cmd.ranges.lin_vel_x = (-0.35, 0.70)
     twist_cmd.ranges.lin_vel_y = (-0.18, 0.18)
-    twist_cmd.ranges.ang_vel_z = (-0.55, 0.55)
+    twist_cmd.ranges.ang_vel_z = (-0.50, 0.50)
 
     # 3) 观测
     feet_asset_cfg = cfg.rewards["foot_slip"].params["asset_cfg"]
@@ -47,41 +47,41 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.observations["policy"].history_length = 4
 
     # 4) 奖励
-    cfg.rewards["track_linear_velocity"].weight = 1.00
-    cfg.rewards["track_angular_velocity"].weight = 1.00
+    cfg.rewards["track_linear_velocity"].weight = 0.95
+    cfg.rewards["track_angular_velocity"].weight = 0.95
 
-    cfg.rewards["flat_orientation_l2"].weight = -10.5
+    cfg.rewards["flat_orientation_l2"].weight = -11.0
 
-    cfg.rewards["action_rate_l2"].weight = -0.07
-    cfg.rewards["joint_acc_l2"].weight = -7.0e-7
+    cfg.rewards["action_rate_l2"].weight = -0.08
+    cfg.rewards["joint_acc_l2"].weight = -8.0e-7
 
     cfg.rewards["soft_landing"].weight = -6.0e-3
 
-    cfg.rewards["foot_clearance"].weight = -1.40
-    cfg.rewards["foot_clearance"].params["target_height"] = 0.11
-    cfg.rewards["foot_clearance"].params["command_threshold"] = 0.04
+    cfg.rewards["foot_clearance"].weight = -1.30
+    cfg.rewards["foot_clearance"].params["target_height"] = 0.10
+    cfg.rewards["foot_clearance"].params["command_threshold"] = 0.08
 
-    cfg.rewards["foot_slip"].weight = -1.35
-    cfg.rewards["foot_slip"].params["command_threshold"] = 0.02
+    cfg.rewards["foot_slip"].weight = -1.40
+    cfg.rewards["foot_slip"].params["command_threshold"] = 0.05
 
     cfg.rewards["feet_air_time"] = RewardTermCfg(
         func=custom_rewards.feet_air_time,
-        weight=0.16,
+        weight=0.14,
         params={
             "sensor_name": "feet_ground_contact",
             "threshold_min": 0.07,
-            "threshold_max": 0.28,
+            "threshold_max": 0.24,
             "command_name": "twist",
-            "command_threshold": 0.04,
+            "command_threshold": 0.08,
         },
     )
 
     pose_cfg = cfg.rewards["pose"]
-    pose_cfg.weight = 1.05
-    pose_cfg.params["walking_threshold"] = 0.06
+    pose_cfg.weight = 1.20
+    pose_cfg.params["walking_threshold"] = 0.10
     pose_cfg.params["running_threshold"] = 0.90
     pose_cfg.params["std_standing"] = _scale_dict_values(
-        pose_cfg.params["std_standing"], 0.85
+        pose_cfg.params["std_standing"], 0.80
     )
     pose_cfg.params["std_walking"] = _scale_dict_values(
         pose_cfg.params["std_walking"], 0.97
@@ -99,14 +99,14 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             cfg.events["encoder_bias"].params["bias_range"] = (-0.008, 0.008)
 
         if "push_robot" in cfg.events:
-            cfg.events["push_robot"].interval_range_s = (5.0, 8.0)
+            cfg.events["push_robot"].interval_range_s = (4.5, 7.0)
             cfg.events["push_robot"].params["velocity_range"] = {
-                "x": (-0.12, 0.12),
-                "y": (-0.10, 0.10),
+                "x": (-0.10, 0.10),
+                "y": (-0.08, 0.08),
                 "z": (-0.05, 0.05),
-                "roll": (-0.12, 0.12),
-                "pitch": (-0.12, 0.12),
-                "yaw": (-0.18, 0.18),
+                "roll": (-0.10, 0.10),
+                "pitch": (-0.10, 0.10),
+                "yaw": (-0.12, 0.12),
             }
 
     # 6) Curriculum：命令
@@ -117,21 +117,21 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "velocity_stages": [
                 {
                     "step": 0,
-                    "lin_vel_x": (-0.20, 0.40),
+                    "lin_vel_x": (-0.15, 0.40),
                     "lin_vel_y": (-0.10, 0.10),
-                    "ang_vel_z": (-0.25, 0.25),
+                    "ang_vel_z": (-0.20, 0.20),
                 },
                 {
                     "step": 4000 * 24,
-                    "lin_vel_x": (-0.35, 0.55),
+                    "lin_vel_x": (-0.25, 0.55),
                     "lin_vel_y": (-0.15, 0.15),
-                    "ang_vel_z": (-0.40, 0.40),
+                    "ang_vel_z": (-0.35, 0.35),
                 },
                 {
                     "step": 10000 * 24,
-                    "lin_vel_x": (-0.40, 0.70),
-                    "lin_vel_y": (-0.20, 0.20),
-                    "ang_vel_z": (-0.55, 0.55),
+                    "lin_vel_x": (-0.35, 0.70),
+                    "lin_vel_y": (-0.18, 0.18),
+                    "ang_vel_z": (-0.50, 0.50),
                 },
             ],
         },
