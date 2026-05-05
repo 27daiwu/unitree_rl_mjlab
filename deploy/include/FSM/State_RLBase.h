@@ -6,6 +6,7 @@
 #include "FSMState.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
+#include "SafetyGuard.h"
 
 class State_RLBase : public FSMState
 {
@@ -14,6 +15,10 @@ public:
     
     void enter()
     {
+        safety_guard_.reset();
+        safety_exit_latched_ = false;
+        safety_exit_reason_.clear();
+
         // set gain
         for (int i = 0; i < env->robot->data.joint_stiffness.size(); ++i)
         {
@@ -57,6 +62,11 @@ public:
     }
 
 private:
+
+    SafetyGuard safety_guard_;
+    bool safety_exit_latched_ = false;
+    std::string safety_exit_reason_;
+    
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
 
     std::thread policy_thread;

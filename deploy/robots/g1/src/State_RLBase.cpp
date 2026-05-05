@@ -74,17 +74,60 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
     this->registered_checks.emplace_back(
-        std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+    std::make_pair(
+            [this]() -> bool {
+            if (safety_exit_latched_) {
+                return true;
+            }
+
+            if (safety_guard_.shouldExitToPassive(FSMState::lowstate.get(), env.get())) {
+                safety_exit_latched_ = true;
+                safety_exit_reason_ = safety_guard_.lastReason();
+                spdlog::warn("[SafetyGuard] Exit RL state '{}' to Passive: {}",
+                            this->getStateString(), safety_exit_reason_);
+                return true;
+            }
+
+            return false;
+            },
             FSMStringMap.right.at("Passive")
         )
     );
 }
 
-void State_RLBase::run()
-{
-    auto action = env->action_manager->processed_actions();
-    for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
-        lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+void State_RLBase::run() {
+  if (!safety_exit_latched_ &&
+      safety_guard_.shouldExitToPassive(FSMState::lowstate.get(), env.get())) {
+    safety_exit_latched_ = true;
+    safety_exit_reason_ = safety_guard_.lastReason();
+
+    spdlog::warn("[SafetyGuard] Immediate damping before FSM transition: {}",
+                 safety_exit_reason_);
+  }
+
+  // 关键点：安全触发后，本周期就不要再发布 policy action。
+  // 先发送 kp=0、kd=Passive.kd、dq=0、tau=0，下一轮 FSM 会切到 Passive。
+  if (safety_exit_latched_) {
+    static const auto passive_kd =
+      param::config["FSM"]["Passive"]["kd"].as<std::vector<float>>();
+
+    const size_t n = std::min(lowcmd->msg_.motor_cmd().size(),
+                              lowstate->msg_.motor_state().size());
+
+    for (size_t i = 0; i < n; ++i) {
+      auto& motor = lowcmd->msg_.motor_cmd()[i];
+      motor.q() = lowstate->msg_.motor_state()[i].q();
+      motor.kp() = 0.0f;
+      motor.kd() = i < passive_kd.size() ? passive_kd[i] : 3.0f;
+      motor.dq() = 0.0f;
+      motor.tau() = 0.0f;
     }
+
+    return;
+  }
+
+  auto action = env->action_manager->processed_actions();
+  for (int i = 0; i < env->robot->data.joint_ids_map.size(); i++) {
+    lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+  }
 }
