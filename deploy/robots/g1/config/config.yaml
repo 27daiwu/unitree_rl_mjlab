@@ -10,9 +10,12 @@ FSM:
     Walk:
       id: 4 
       type: RLBase
+    Blind:
+      id: 5
+      type: RLBase
 
     Mimic_Dance1_subject2:
-      id: 5
+      id: 6
       type: Mimic
 
 
@@ -40,6 +43,7 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
       Walk: RT + B.on_pressed
+      Blind: RT + Y.on_pressed
 
     kp: [
       100,100,100,150,40,40,
@@ -77,14 +81,23 @@ FSM:
   Walk:
       transitions: 
         Passive: LT + B.on_pressed
+        Mimic_Dance1_subject2: RB + A.on_pressed
 
       policy_dir: config/policy/walk
+
+  Blind:
+      transitions:
+        Passive: LT + B.on_pressed
+        Mimic_Dance1_subject2: RB + A.on_pressed
+
+      policy_dir: config/policy/blind
 
   Mimic_Dance1_subject2:
     transitions:
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
-
+      Walk: RT + B.on_pressed
+      Blind: RT + Y.on_pressed
     motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
     policy_dir: config/policy/mimic/dance1_subject2/
     time_start: 0.0

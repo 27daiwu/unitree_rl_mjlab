@@ -173,3 +173,18 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     del cfg.curriculum["terrain_levels"]
 
     return cfg
+
+def unitree_g1_blind_rough_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Create Unitree G1 blind rough terrain velocity configuration."""
+    cfg = unitree_g1_rough_env_cfg(play=play)
+
+    # Switch to flat terrain.
+    assert cfg.scene.terrain is not None
+    cfg.scene.terrain.terrain_type = "plane"
+    cfg.scene.terrain.terrain_generator = None
+
+    # Disable terrain curriculum.
+    assert "terrain_levels" in cfg.curriculum
+    del cfg.curriculum["terrain_levels"]
+
+    return cfg

@@ -3,7 +3,7 @@ from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 
-from .config.g1.env_cfgs import unitree_g1_flat_env_cfg
+from .config.g1.env_cfgs import unitree_g1_rough_env_cfg
 from . import curriculums as custom_curriculums
 from . import observations as custom_observations
 from . import rewards as custom_rewards
@@ -23,26 +23,97 @@ def _set_reward_param(cfg: ManagerBasedRlEnvCfg, name: str, key: str, value) -> 
         cfg.rewards[name].params[key] = value
 
 
-def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    cfg = unitree_g1_flat_env_cfg(play=play)
 
-    # 目标：修复 60000 轮后仍存在的后退摇晃、转向僵硬/非原地、速度突变后持续晃动。
-    # 核心思路：不要继续单纯加大脚滑惩罚；改为提高转向/后退样本密度、缩短命令重采样、加强停稳约束。
+def _remove_height_scan_for_blind_walk(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Remove exteroceptive terrain height observations.
+
+    纯盲走策略不能依赖 terrain_scan / height_scan。这里保留 terrain 本身，
+    但删除 policy/actor/critic 中的 height_scan，尽量维持和已训练平地策略一致的输入结构。
+    """
+    for group_name in ("policy", "actor", "critic"):
+        if group_name in cfg.observations:
+            cfg.observations[group_name].terms.pop("height_scan", None)
+
+
+def _configure_mild_blind_terrain_phase1(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
+    """Phase-1 terrain: only mild slope + mild roughness, no boxes/stairs.
+
+    用途：从已经稳定的平地/急停 checkpoint 过渡到复杂地形。
+    不要在第一阶段加入 10~15cm 台阶，否则很容易破坏原有步态。
+    """
+    terrain = cfg.scene.terrain
+    if terrain is None or terrain.terrain_generator is None:
+        return
+
+    tg = terrain.terrain_generator
+    # 保留 terrain generator 的 row difficulty，但初始只采样最低 level。
+    tg.curriculum = not play
+    tg.num_rows = 6
+    tg.num_cols = 10
+    tg.size = (8.0, 8.0)
+    tg.border_width = 10.0
+    tg.horizontal_scale = 0.10
+    tg.vertical_scale = 0.005
+    tg.slope_threshold = 0.75
+    tg.difficulty_range = (0.0, 0.35)
+
+    sub = getattr(tg, "sub_terrains", {})
+
+    # 第一阶段只保留缓坡和很轻的凹凸路。
+    if "random_rough" in sub:
+        sub["random_rough"].proportion = 0.45
+        sub["random_rough"].noise_range = (0.002, 0.025)
+        sub["random_rough"].noise_step = 0.005
+        if hasattr(sub["random_rough"], "border_width"):
+            sub["random_rough"].border_width = 0.25
+
+    if "hf_pyramid_slope" in sub:
+        sub["hf_pyramid_slope"].proportion = 0.30
+        sub["hf_pyramid_slope"].slope_range = (0.0, 0.12)  # 约 0~7 deg
+        if hasattr(sub["hf_pyramid_slope"], "platform_width"):
+            sub["hf_pyramid_slope"].platform_width = 3.0
+
+    if "hf_pyramid_slope_inv" in sub:
+        sub["hf_pyramid_slope_inv"].proportion = 0.25
+        sub["hf_pyramid_slope_inv"].slope_range = (0.0, 0.10)  # 约 0~6 deg
+        if hasattr(sub["hf_pyramid_slope_inv"], "platform_width"):
+            sub["hf_pyramid_slope_inv"].platform_width = 3.0
+
+    # 第一阶段禁用 boxes/stairs。等平地能力不退化后，再单独开第二阶段。
+    for name in ("boxes", "pyramid_stairs", "pyramid_stairs_inv"):
+        if name in sub:
+            sub[name].proportion = 0.0
+
+    # 不让 terrain_levels curriculum 自动把机器人推到更高难度；
+    # 第一阶段目标是“不破坏步态 + 适应轻微地面扰动”。
+    cfg.curriculum.pop("terrain_levels", None)
+    if hasattr(terrain, "max_init_terrain_level"):
+        terrain.max_init_terrain_level = 0 if not play else None
+
+
+def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    cfg = unitree_g1_rough_env_cfg(play=play)
+
+    _remove_height_scan_for_blind_walk(cfg)
+    _configure_mild_blind_terrain_phase1(cfg, play=play)
+
+    # 目标：在不破坏现有优秀平地步态的前提下，加入轻微盲走地形适应。
+    # 核心思路：完全继承 v2 的运动/奖励结构，只把地形从平地换成“低难度坡面+轻微凹凸”。
 
     # 1) 动作幅值：略小于上一版 0.36，降低速度突变时的髋/踝过冲，但不要压到 0.30 以下。
     cfg.actions["joint_pos"].scale = 0.35
 
     # 2) 命令分布：缩短重采样时间，让策略真正学习加减速和刹停过渡。
     twist_cmd = cfg.commands["twist"]
-    twist_cmd.resampling_time_range = (2.5, 4.0)
+    twist_cmd.resampling_time_range = (3.0, 4.8)
     twist_cmd.rel_standing_envs = 0.30
     twist_cmd.rel_heading_envs = 0.10
     twist_cmd.heading_control_stiffness = 0.65
 
     # 比上一版放开后退和角速度，否则会学成“慢转 + 姿态补偿位移”。
-    twist_cmd.ranges.lin_vel_x = (-0.35, 0.70)
-    twist_cmd.ranges.lin_vel_y = (-0.18, 0.18)
-    twist_cmd.ranges.ang_vel_z = (-0.75, 0.75)
+    twist_cmd.ranges.lin_vel_x = (-0.22, 0.50)
+    twist_cmd.ranges.lin_vel_y = (-0.10, 0.10)
+    twist_cmd.ranges.ang_vel_z = (-0.45, 0.45)
 
     # 3) 观测：增加短历史，帮助策略根据 command / action / IMU 历史推断速度变化趋势。
     feet_asset_cfg = cfg.rewards["foot_slip"].params["asset_cfg"]
@@ -79,7 +150,7 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # 后退脚尖/脚跟更容易蹭地，略提高目标脚高，但脚滑惩罚仍采用渐进增强。
     _set_reward_weight(cfg, "foot_clearance", -1.25)
-    _set_reward_param(cfg, "foot_clearance", "target_height", 0.105)
+    _set_reward_param(cfg, "foot_clearance", "target_height", 0.110)
     _set_reward_param(cfg, "foot_clearance", "command_threshold", 0.06)
 
     _set_reward_weight(cfg, "foot_slip", -1.70)
@@ -126,28 +197,20 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # 兼容不同版本命名：官方常见是 foot_friction，你当前代码里用了 body_friction。
         for friction_event_name in ("foot_friction", "body_friction"):
             if friction_event_name in cfg.events:
-                cfg.events[friction_event_name].params["ranges"] = (0.80, 1.25)
+                cfg.events[friction_event_name].params["ranges"] = (0.85, 1.20)
 
         if "encoder_bias" in cfg.events:
-            cfg.events["encoder_bias"].params["bias_range"] = (-0.006, 0.006)
+            cfg.events["encoder_bias"].params["bias_range"] = (-0.004, 0.004)
 
         if "base_com" in cfg.events:
             cfg.events["base_com"].params["ranges"] = {
-                0: (-0.025, 0.025),
-                1: (-0.025, 0.025),
-                2: (-0.020, 0.020),
+                0: (-0.015, 0.015),
+                1: (-0.015, 0.015),
+                2: (-0.012, 0.012),
             }
 
-        if "push_robot" in cfg.events:
-            cfg.events["push_robot"].interval_range_s = (5.5, 8.0)
-            cfg.events["push_robot"].params["velocity_range"] = {
-                "x": (-0.10, 0.10),
-                "y": (-0.08, 0.08),
-                "z": (-0.04, 0.04),
-                "roll": (-0.10, 0.10),
-                "pitch": (-0.10, 0.10),
-                "yaw": (-0.16, 0.16),
-            }
+        # 第一阶段先关 push。复杂地形和外力扰动不要同时上，否则会破坏原有稳定步态。
+        cfg.events.pop("push_robot", None)
 
     # 6) Curriculum：从你的 60000 轮 checkpoint 续训时，先回到中等难度适应新奖励，
     #    然后再逐步放开后退和大角速度。这样比直接全范围续训更稳。
@@ -158,27 +221,27 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "velocity_stages": [
                 {
                     "step": 0,
+                    "lin_vel_x": (-0.10, 0.30),
+                    "lin_vel_y": (-0.04, 0.04),
+                    "ang_vel_z": (-0.25, 0.25),
+                },
+                {
+                    "step": 5000 * 24,
+                    "lin_vel_x": (-0.14, 0.38),
+                    "lin_vel_y": (-0.06, 0.06),
+                    "ang_vel_z": (-0.32, 0.32),
+                },
+                {
+                    "step": 12000 * 24,
                     "lin_vel_x": (-0.18, 0.45),
                     "lin_vel_y": (-0.08, 0.08),
-                    "ang_vel_z": (-0.55, 0.55),
+                    "ang_vel_z": (-0.40, 0.40),
                 },
                 {
-                    "step": 3000 * 24,
-                    "lin_vel_x": (-0.25, 0.60),
-                    "lin_vel_y": (-0.12, 0.12),
-                    "ang_vel_z": (-0.65, 0.65),
-                },
-                {
-                    "step": 8000 * 24,
-                    "lin_vel_x": (-0.32, 0.68),
-                    "lin_vel_y": (-0.16, 0.16),
-                    "ang_vel_z": (-0.75, 0.75),
-                },
-                {
-                    "step": 16000 * 24,
-                    "lin_vel_x": (-0.38, 0.75),
-                    "lin_vel_y": (-0.20, 0.20),
-                    "ang_vel_z": (-0.85, 0.85),
+                    "step": 22000 * 24,
+                    "lin_vel_x": (-0.22, 0.52),
+                    "lin_vel_y": (-0.10, 0.10),
+                    "ang_vel_z": (-0.48, 0.48),
                 },
             ],
         },
@@ -202,10 +265,10 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "reward_name": "track_angular_velocity",
             "weight_stages": [
-                {"step": 0, "weight": 0.95},
-                {"step": 3000 * 24, "weight": 1.05},
-                {"step": 8000 * 24, "weight": 1.15},
-                {"step": 16000 * 24, "weight": 1.20},
+                {"step": 0, "weight": 0.85},
+                {"step": 5000 * 24, "weight": 0.90},
+                {"step": 12000 * 24, "weight": 0.95},
+                {"step": 22000 * 24, "weight": 1.00},
             ],
         },
     )
@@ -233,9 +296,10 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     return cfg
 
-# python scripts/train.py Mjlab-Walk-Unitree-G1 \
+
+# python scripts/train.py Mjlab-Blind-Rough-Unitree-G1 \
 #   --env.scene.num-envs=4096 \
 #   --agent.resume=True \
 #   --agent.load_run=2026-05-04_23-18-28 \
-#   --agent.load_checkpoint=model_79999.pt \
+#   --agent.load_checkpoint=model_79998.pt \
 #   --agent.max_iterations=30000
