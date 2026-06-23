@@ -24,22 +24,29 @@ def _set_reward_param(cfg: ManagerBasedRlEnvCfg, name: str, key: str, value) -> 
 
 
 
-def _remove_height_scan_for_blind_walk(cfg: ManagerBasedRlEnvCfg) -> None:
-    """Remove exteroceptive terrain height observations.
+def _ensure_height_scan_for_realsense_walk(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Ensure exteroceptive terrain height observations are available.
 
-    纯盲走策略不能依赖 terrain_scan / height_scan。这里保留 terrain 本身，
-    但删除 policy/actor/critic 中的 height_scan，尽量维持和已训练平地策略一致的输入结构。
+    RealSense/视觉辅助过障训练需要地形外感观测，优先使用已有的 `height_scan`。
+    如果 actor/critic 组存在但缺少该项，则从 policy 组同步一份。
     """
-    for group_name in ("policy", "actor", "critic"):
-        if group_name in cfg.observations:
-            cfg.observations[group_name].terms.pop("height_scan", None)
+    policy_terms = None
+    if "policy" in cfg.observations:
+        policy_terms = cfg.observations["policy"].terms
+
+    if policy_terms is None or "height_scan" not in policy_terms:
+        return
+
+    for group_name in ("actor", "critic"):
+        if group_name in cfg.observations and "height_scan" not in cfg.observations[group_name].terms:
+            cfg.observations[group_name].terms["height_scan"] = policy_terms["height_scan"]
 
 
-def _configure_mild_blind_terrain_phase1(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
-    """Phase-1 terrain: only mild slope + mild roughness, no boxes/stairs.
+def _configure_realsense_stairs_terrain(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
+    """Configure terrain for visual stair-climbing training.
 
-    用途：从已经稳定的平地/急停 checkpoint 过渡到复杂地形。
-    不要在第一阶段加入 10~15cm 台阶，否则很容易破坏原有步态。
+    目标：在 rough terrain 上明确加入台阶地形，并保留轻度坡面/随机地形，
+    让策略通过外感观测学习提前抬脚与步态调整。
     """
     terrain = cfg.scene.terrain
     if terrain is None or terrain.terrain_generator is None:
@@ -48,54 +55,68 @@ def _configure_mild_blind_terrain_phase1(cfg: ManagerBasedRlEnvCfg, play: bool) 
     tg = terrain.terrain_generator
     # 保留 terrain generator 的 row difficulty，但初始只采样最低 level。
     tg.curriculum = not play
-    tg.num_rows = 6
-    tg.num_cols = 10
+    tg.num_rows = 8
+    tg.num_cols = 12
     tg.size = (8.0, 8.0)
     tg.border_width = 10.0
     tg.horizontal_scale = 0.10
     tg.vertical_scale = 0.005
     tg.slope_threshold = 0.75
-    tg.difficulty_range = (0.0, 0.35)
+    tg.difficulty_range = (0.0, 0.75)
 
     sub = getattr(tg, "sub_terrains", {})
 
-    # 第一阶段只保留缓坡和很轻的凹凸路。
+    # 混合：轻度随机粗糙 + 缓坡 + 台阶（正/反）。
     if "random_rough" in sub:
-        sub["random_rough"].proportion = 0.45
-        sub["random_rough"].noise_range = (0.002, 0.025)
+        sub["random_rough"].proportion = 0.30
+        sub["random_rough"].noise_range = (0.002, 0.020)
         sub["random_rough"].noise_step = 0.005
         if hasattr(sub["random_rough"], "border_width"):
             sub["random_rough"].border_width = 0.25
 
     if "hf_pyramid_slope" in sub:
-        sub["hf_pyramid_slope"].proportion = 0.30
-        sub["hf_pyramid_slope"].slope_range = (0.0, 0.12)  # 约 0~7 deg
+        sub["hf_pyramid_slope"].proportion = 0.20
+        sub["hf_pyramid_slope"].slope_range = (0.0, 0.10)
         if hasattr(sub["hf_pyramid_slope"], "platform_width"):
             sub["hf_pyramid_slope"].platform_width = 3.0
 
     if "hf_pyramid_slope_inv" in sub:
-        sub["hf_pyramid_slope_inv"].proportion = 0.25
-        sub["hf_pyramid_slope_inv"].slope_range = (0.0, 0.10)  # 约 0~6 deg
+        sub["hf_pyramid_slope_inv"].proportion = 0.15
+        sub["hf_pyramid_slope_inv"].slope_range = (0.0, 0.08)
         if hasattr(sub["hf_pyramid_slope_inv"], "platform_width"):
             sub["hf_pyramid_slope_inv"].platform_width = 3.0
 
-    # 第一阶段禁用 boxes/stairs。等平地能力不退化后，再单独开第二阶段。
-    for name in ("boxes", "pyramid_stairs", "pyramid_stairs_inv"):
-        if name in sub:
-            sub[name].proportion = 0.0
+    if "boxes" in sub:
+        sub["boxes"].proportion = 0.0
 
-    # 不让 terrain_levels curriculum 自动把机器人推到更高难度；
-    # 第一阶段目标是“不破坏步态 + 适应轻微地面扰动”。
-    cfg.curriculum.pop("terrain_levels", None)
+    if "pyramid_stairs" in sub:
+        sub["pyramid_stairs"].proportion = 0.22
+        if hasattr(sub["pyramid_stairs"], "step_height_range"):
+            sub["pyramid_stairs"].step_height_range = (0.04, 0.10)
+        if hasattr(sub["pyramid_stairs"], "step_width"):
+            sub["pyramid_stairs"].step_width = 0.28
+        if hasattr(sub["pyramid_stairs"], "platform_width"):
+            sub["pyramid_stairs"].platform_width = 2.5
+
+    if "pyramid_stairs_inv" in sub:
+        sub["pyramid_stairs_inv"].proportion = 0.13
+        if hasattr(sub["pyramid_stairs_inv"], "step_height_range"):
+            sub["pyramid_stairs_inv"].step_height_range = (0.03, 0.08)
+        if hasattr(sub["pyramid_stairs_inv"], "step_width"):
+            sub["pyramid_stairs_inv"].step_width = 0.30
+        if hasattr(sub["pyramid_stairs_inv"], "platform_width"):
+            sub["pyramid_stairs_inv"].platform_width = 2.5
+
+    # 保留 terrain_levels curriculum，让难度逐步覆盖更高台阶。
     if hasattr(terrain, "max_init_terrain_level"):
-        terrain.max_init_terrain_level = 0 if not play else None
+        terrain.max_init_terrain_level = 1 if not play else None
 
 
-def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def unitree_g1_walk_realsense_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = unitree_g1_rough_env_cfg(play=play)
 
-    _remove_height_scan_for_blind_walk(cfg)
-    _configure_mild_blind_terrain_phase1(cfg, play=play)
+    _ensure_height_scan_for_realsense_walk(cfg)
+    _configure_realsense_stairs_terrain(cfg, play=play)
 
     # 目标：在不破坏现有优秀平地步态的前提下，加入轻微盲走地形适应。
     # 核心思路：完全继承 v2 的运动/奖励结构，只把地形从平地换成“低难度坡面+轻微凹凸”。
@@ -295,11 +316,3 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.events.pop("base_com", None)
 
     return cfg
-
-
-# python scripts/train.py Mjlab-Blind-Rough-Unitree-G1 \
-#   --env.scene.num-envs=4096 \
-#   --agent.resume=True \
-#   --agent.load_run=2026-05-04_23-18-28 \
-#   --agent.load_checkpoint=model_79998.pt \
-#   --agent.max_iterations=30000

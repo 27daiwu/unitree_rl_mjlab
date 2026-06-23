@@ -174,7 +174,7 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     return cfg
 
-def unitree_g1_blind_rough_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def unitree_g1_walk_realsense_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Create Unitree G1 blind rough terrain velocity configuration."""
     cfg = unitree_g1_rough_env_cfg(play=play)
 
