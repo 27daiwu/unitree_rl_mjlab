@@ -11,19 +11,20 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
 4. 设置裁剪起点/终点
 5. 同步裁剪所有逐帧字段并保存新 NPZ
 6. 可选：裁剪后重新计算常见速度字段
+7. 独立浮动进度条与播放/快进/裁剪按钮
 
 依赖：
-    pip install numpy mujoco glfw
+    pip install numpy mujoco glfw  # tkinter 通常由系统 python3-tk 提供
 
 示例：
-    python scripts/npz_player_cropper.py \
-        --input mjlab/motions/g1/bencaogangmu_bencaogangmu.npz \
-        --output mjlab/motions/g1/bencaogangmu_crop.npz \
+    python scripts/npz_player_cropper_gui.py \
+        --input mjlab/motions/g1/bencaogangmu.npz \
+        --output mjlab/motions/g1/bencaogangmu_1.npz \
         --model-xml mjlab/asset_zoo/robots/unitree_g1/xmls/g1.xml
         --no-loop
 
 如果 NPZ 字段无法自动识别，可手动指定：
-    python npz_player_cropper.py \
+    python npz_player_cropper_gui.py \
         --input motion.npz \
         --model-xml g1.xml \
         --joint-key joint_pos \
@@ -57,6 +58,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+except ImportError:
+    tk = None
+    ttk = None
+    messagebox = None
 
 try:
     import mujoco
@@ -375,6 +384,224 @@ class MotionData:
                         )
 
 
+class FloatingController:
+    """独立浮动控制窗口。
+
+    不启动 Tk mainloop，而是在 MuJoCo 主循环中调用 update()，保证所有
+    MotionPlayer 状态修改均发生在同一线程，避免快速点击造成并发崩溃。
+    """
+
+    def __init__(self, player: "MotionPlayer"):
+        if tk is None or ttk is None:
+            raise RuntimeError(
+                "系统缺少 tkinter。Ubuntu 可执行：sudo apt install python3-tk"
+            )
+
+        self.player = player
+        self.closed = False
+        self.dragging = False
+        self.updating_scale = False
+
+        self.root = tk.Tk()
+        self.root.title("NPZ Motion Controller")
+        self.root.geometry("820x310")
+        self.root.minsize(700, 290)
+        self.root.attributes("-topmost", bool(player.args.controller_topmost))
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.frame_var = tk.IntVar(value=0)
+        self.status_var = tk.StringVar(value="暂停")
+        self.time_var = tk.StringVar(value="0.000 s")
+        self.speed_var = tk.StringVar(value=f"{player.speed:.2f}x")
+        self.crop_var = tk.StringVar(value="裁剪区间：未设置")
+
+        self._build_widgets()
+        self.refresh(force=True)
+
+    def _build_widgets(self) -> None:
+        root = self.root
+        root.columnconfigure(0, weight=1)
+
+        info = ttk.Frame(root, padding=(10, 8, 10, 2))
+        info.grid(row=0, column=0, sticky="ew")
+        info.columnconfigure(1, weight=1)
+
+        ttk.Label(info, textvariable=self.status_var, width=8).grid(row=0, column=0)
+        ttk.Label(info, textvariable=self.time_var, anchor="center").grid(
+            row=0, column=1, sticky="ew"
+        )
+        ttk.Label(info, textvariable=self.speed_var, width=10).grid(row=0, column=2)
+
+        self.scale = ttk.Scale(
+            root,
+            from_=0,
+            to=max(0, self.player.motion.num_frames - 1),
+            orient="horizontal",
+            variable=self.frame_var,
+            command=self._on_scale_move,
+        )
+        self.scale.grid(row=1, column=0, padx=12, pady=(4, 0), sticky="ew")
+        self.scale.bind("<ButtonPress-1>", self._on_drag_start)
+        self.scale.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        self.frame_label = ttk.Label(root, anchor="center")
+        self.frame_label.grid(row=2, column=0, padx=10, pady=(2, 7), sticky="ew")
+
+        controls = ttk.Frame(root, padding=(10, 0, 10, 4))
+        controls.grid(row=3, column=0, sticky="ew")
+        for i in range(9):
+            controls.columnconfigure(i, weight=1)
+
+        ttk.Button(controls, text="|< 首帧", command=lambda: self._jump(0)).grid(row=0, column=0, padx=2, sticky="ew")
+        ttk.Button(controls, text="-1 秒", command=lambda: self._step(-round(self.player.motion.fps))).grid(row=0, column=1, padx=2, sticky="ew")
+        ttk.Button(controls, text="-10 帧", command=lambda: self._step(-10)).grid(row=0, column=2, padx=2, sticky="ew")
+        ttk.Button(controls, text="< 前一帧", command=lambda: self._step(-1)).grid(row=0, column=3, padx=2, sticky="ew")
+        self.play_button = ttk.Button(controls, text="▶ 播放", command=self._toggle_play)
+        self.play_button.grid(row=0, column=4, padx=4, sticky="ew")
+        ttk.Button(controls, text="后一帧 >", command=lambda: self._step(1)).grid(row=0, column=5, padx=2, sticky="ew")
+        ttk.Button(controls, text="+10 帧", command=lambda: self._step(10)).grid(row=0, column=6, padx=2, sticky="ew")
+        ttk.Button(controls, text="+1 秒", command=lambda: self._step(round(self.player.motion.fps))).grid(row=0, column=7, padx=2, sticky="ew")
+        ttk.Button(controls, text="末帧 >|", command=lambda: self._jump(self.player.motion.num_frames - 1)).grid(row=0, column=8, padx=2, sticky="ew")
+
+        speed = ttk.Frame(root, padding=(10, 4, 10, 4))
+        speed.grid(row=4, column=0, sticky="ew")
+        speed.columnconfigure(6, weight=1)
+        ttk.Label(speed, text="速度").grid(row=0, column=0, padx=(0, 5))
+        for col, value in enumerate((0.25, 0.5, 1.0, 1.5, 2.0, 4.0), start=1):
+            ttk.Button(
+                speed,
+                text=f"{value:g}x",
+                command=lambda v=value: self._set_speed(v),
+                width=6,
+            ).grid(row=0, column=col, padx=2)
+
+        crop = ttk.LabelFrame(root, text="裁剪", padding=(8, 6))
+        crop.grid(row=5, column=0, padx=10, pady=(2, 8), sticky="ew")
+        crop.columnconfigure(5, weight=1)
+        ttk.Button(crop, text="设为起点 I", command=self._set_crop_start).grid(row=0, column=0, padx=2)
+        ttk.Button(crop, text="设为终点 O", command=self._set_crop_end).grid(row=0, column=1, padx=2)
+        ttk.Button(crop, text="清除 C", command=self._clear_crop).grid(row=0, column=2, padx=2)
+        ttk.Button(crop, text="保存 S", command=self._save).grid(row=0, column=3, padx=2)
+        ttk.Label(crop, textvariable=self.crop_var, anchor="center").grid(row=0, column=5, padx=8, sticky="ew")
+        ttk.Button(crop, text="退出", command=self._exit).grid(row=0, column=6, padx=2)
+
+    def _on_drag_start(self, _event: Any) -> None:
+        self.dragging = True
+        self.player.playing = False
+        self.player.accumulator = 0.0
+
+    def _on_drag_end(self, _event: Any) -> None:
+        self.dragging = False
+        self._seek_from_scale()
+
+    def _on_scale_move(self, _value: str) -> None:
+        if self.updating_scale:
+            return
+        # 拖动过程中实时预览；所有回调都由主线程 root.update() 触发。
+        self._seek_from_scale()
+
+    def _seek_from_scale(self) -> None:
+        frame = int(round(float(self.frame_var.get())))
+        self.player.playing = False
+        self.player.accumulator = 0.0
+        self.player._set_frame(frame)
+
+    def _toggle_play(self) -> None:
+        self.player.playing = not self.player.playing
+        self.player.accumulator = 0.0
+
+    def _step(self, delta: int) -> None:
+        self.player.playing = False
+        self.player.accumulator = 0.0
+        self.player._set_frame(self.player.frame + delta)
+
+    def _jump(self, frame: int) -> None:
+        self.player.playing = False
+        self.player.accumulator = 0.0
+        self.player._set_frame(frame)
+
+    def _set_speed(self, value: float) -> None:
+        self.player.speed = max(0.05, min(8.0, float(value)))
+
+    def _set_crop_start(self) -> None:
+        self.player.crop_start = self.player.frame
+
+    def _set_crop_end(self) -> None:
+        self.player.crop_end = self.player.frame
+
+    def _clear_crop(self) -> None:
+        self.player.crop_start = None
+        self.player.crop_end = None
+
+    def _save(self) -> None:
+        try:
+            self.player._save_crop()
+            if messagebox is not None:
+                messagebox.showinfo("保存成功", f"已保存到：\n{self.player.output_path}", parent=self.root)
+        except Exception as exc:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", str(exc), parent=self.root)
+            else:
+                print(f"\n保存失败：{exc}", file=sys.stderr)
+
+    def _exit(self) -> None:
+        self.player.exit_requested = True
+        self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
+    def process_events(self) -> bool:
+        if self.closed:
+            return False
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+            return True
+        except tk.TclError:
+            self.closed = True
+            return False
+
+    def refresh(self, force: bool = False) -> None:
+        if self.closed:
+            return
+
+        player = self.player
+        if not self.dragging or force:
+            self.updating_scale = True
+            try:
+                self.frame_var.set(player.frame)
+            finally:
+                self.updating_scale = False
+
+        state = "播放中" if player.playing else "已暂停"
+        self.status_var.set(state)
+        self.play_button.configure(text="⏸ 暂停" if player.playing else "▶ 播放")
+        self.time_var.set(
+            f"{player.frame / player.motion.fps:.3f} s / "
+            f"{(player.motion.num_frames - 1) / player.motion.fps:.3f} s"
+        )
+        self.speed_var.set(f"{player.speed:.2f}x")
+        self.frame_label.configure(
+            text=f"frame {player.frame} / {player.motion.num_frames - 1}"
+        )
+
+        start = "-" if player.crop_start is None else str(player.crop_start)
+        end = "-" if player.crop_end is None else str(player.crop_end)
+        if player.crop_start is not None and player.crop_end is not None:
+            lo, hi = sorted((player.crop_start, player.crop_end))
+            duration = (hi - lo + 1) / player.motion.fps
+            self.crop_var.set(f"裁剪区间：[{lo}, {hi}]，{duration:.3f} s")
+        else:
+            self.crop_var.set(f"裁剪区间：[{start}, {end}]")
+
+
 class MotionPlayer:
     def __init__(self, motion: MotionData, args: argparse.Namespace):
         self.motion = motion
@@ -392,6 +619,7 @@ class MotionPlayer:
         self.exit_requested = False
         self.last_wall_time = time.perf_counter()
         self.accumulator = 0.0
+        self.controller: FloatingController | None = None
 
         self.free_joint_qpos_adr = self._find_free_joint_qpos_address()
         self.joint_qpos_addresses = self._build_joint_qpos_mapping()
@@ -625,6 +853,9 @@ class MotionPlayer:
         self._set_frame(0)
         self._print_help()
 
+        if not self.args.no_controller:
+            self.controller = FloatingController(self)
+
         with mujoco.viewer.launch_passive(
             self.model,
             self.data,
@@ -633,6 +864,9 @@ class MotionPlayer:
             show_right_ui=True,
         ) as viewer:
             while viewer.is_running() and not self.exit_requested:
+                if self.controller is not None:
+                    self.controller.process_events()
+
                 now = time.perf_counter()
                 wall_dt = now - self.last_wall_time
                 self.last_wall_time = now
@@ -658,11 +892,15 @@ class MotionPlayer:
 
                 self._apply_frame_to_model()
                 viewer.sync()
+                if self.controller is not None:
+                    self.controller.refresh()
                 self._print_status()
 
                 # 避免主循环占满 CPU。
                 time.sleep(0.001)
 
+        if self.controller is not None:
+            self.controller.close()
         print("\n播放器已退出。")
 
 
@@ -713,6 +951,17 @@ def parse_args() -> argparse.Namespace:
         "--recalc-velocity",
         action="store_true",
         help="保存裁剪文件时重算已存在的常见速度字段",
+    )
+    parser.add_argument(
+        "--no-controller",
+        action="store_true",
+        help="不显示独立浮动控制器，仅使用键盘快捷键",
+    )
+    parser.add_argument(
+        "--controller-topmost",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="浮动控制器是否保持窗口置顶",
     )
 
     args = parser.parse_args()
