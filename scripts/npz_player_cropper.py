@@ -17,9 +17,10 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
 
 示例：
     python scripts/npz_player_cropper.py \
-        --input mjlab/motions/g1/bencaogangmu.npz \
+        --input mjlab/motions/g1/bencaogangmu_bencaogangmu.npz \
+        --output mjlab/motions/g1/bencaogangmu_crop.npz \
         --model-xml mjlab/asset_zoo/robots/unitree_g1/xmls/g1.xml
-        --output mjlab/motions/g1/bencaogangmu_crop.npz
+        --no-loop
 
 如果 NPZ 字段无法自动识别，可手动指定：
     python npz_player_cropper.py \
