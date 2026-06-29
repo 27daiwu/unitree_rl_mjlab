@@ -18,7 +18,7 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
 
 示例：
     python scripts/npz_player_cropper_gui.py \
-        --input mjlab/motions/g1/bencaogangmu.npz \
+        --input mjlab/motions/g1/bencaogangmu_crop.npz \
         --output mjlab/motions/g1/bencaogangmu_1.npz \
         --model-xml mjlab/asset_zoo/robots/unitree_g1/xmls/g1.xml
         --no-loop
@@ -1000,3 +1000,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
