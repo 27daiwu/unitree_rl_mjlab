@@ -99,8 +99,7 @@ def unitree_g1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=0.30,
         params={
             "sensor_name": "feet_ground_contact",
-            "threshold_min": 0.10,
-            "threshold_max": 0.30,
+            "threshold": 0.20,
             "command_name": "twist",
             "command_threshold": 0.05,
         },

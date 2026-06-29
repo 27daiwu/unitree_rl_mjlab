@@ -1,5 +1,6 @@
 from mjlab.tasks.registry import register_mjlab_task
 from src.tasks.velocity.rl import VelocityOnPolicyRunner
+from src.tasks.velocity.walk_env_cfg import unitree_g1_walk_env_cfg
 
 from .env_cfgs import (
   unitree_g1_flat_env_cfg,
@@ -22,3 +23,12 @@ register_mjlab_task(
   rl_cfg=unitree_g1_ppo_runner_cfg(),
   runner_cls=VelocityOnPolicyRunner,
 )
+
+register_mjlab_task(
+  task_id="Unitree-G1-Walk",
+  env_cfg=unitree_g1_walk_env_cfg(),
+  play_env_cfg=unitree_g1_walk_env_cfg(play=True),
+  rl_cfg=unitree_g1_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
