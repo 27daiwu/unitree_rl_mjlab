@@ -99,14 +99,6 @@ FSM:
 
       policy_dir: config/policy/walk
 
-<<<<<<< HEAD
-  Walk_realsense:
-      transitions:
-        Passive: LT + B.on_pressed
-        Mimic_Dance1_subject2: RB + A.on_pressed
-
-      policy_dir: config/policy/walk realsense
-=======
   WalkPro:
     transitions:
       Passive: LT + B.on_pressed
@@ -120,7 +112,6 @@ FSM:
   #       Mimic_Dance1_subject2: RB + A.on_pressed
 
   #     policy_dir: config/policy/blind
->>>>>>> a5cd658 (更新G1机器人的状态机配置，移除盲行模式并添加WalkPro状态)
 
   Mimic_Dance1_subject2:
     transitions:
