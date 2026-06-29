@@ -1,7 +1,7 @@
 joint_ids_map: [3,4,5,0,1,2,9,10,11,6,7,8,]
 step_dt: 0.02
-stiffness: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
-damping:   [ 1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1]
+stiffness: [20, 20, 40, 20, 20, 40, 20, 20, 40, 20, 20, 40]
+damping:   [ 1,  1,  2,  1,  1,  2,  1,  1,  2,  1,  1,  2]
 default_joint_pos: [-0.1,0.9,-1.8, 0.1,0.9,-1.8, -0.1,0.9,-1.8, 0.1,0.9,-1.8]
 
 commands:
@@ -15,7 +15,7 @@ actions:
   JointPositionAction:
     clip: null
     joint_names: [.*]
-    scale: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    scale: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
     offset: [-0.1,0.9,-1.8, 0.1,0.9,-1.8, -0.1,0.9,-1.8, 0.1,0.9,-1.8]
     joint_ids: null
 observations:
@@ -30,9 +30,14 @@ observations:
     scale: [1.0, 1.0, 1.0]
     history_length: 1
   velocity_commands:
-    params: { command_name: base_velocity }
+    params: {command_name: base_velocity}
     clip: null
-    scale: [ 1.0, 1.0, 1.0 ]
+    scale: [1.0, 1.0, 1.0]
+    history_length: 1
+  gait_phase:
+    params: {period: 0.6}
+    clip: null
+    scale: [1.0, 1.0]
     history_length: 1
   joint_pos_rel:
     params: {}

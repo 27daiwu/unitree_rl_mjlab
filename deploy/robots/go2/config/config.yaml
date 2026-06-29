@@ -9,7 +9,7 @@ FSM:
       type: RLBase
   Passive:
     transitions: 
-      FixStand: LT + A.on_pressed
+      FixStand: LT + up.on_pressed
     mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   FixStand:

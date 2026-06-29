@@ -6,10 +6,18 @@ wandb
 MUJOCO_LOG.TXT
 deploy/robots/go2/build
 deploy/robots/g1/build
+deploy/robots/h1_2/build
 deploy/robots/g1_23dof/build
+<<<<<<< HEAD
 deploy/robots/h1_2/build
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 .vscode/
+=======
+deploy/robots/r1/build
+deploy/robots/a2/build
+src/assets/motions/g1/dance1_subject2.npz
+simulate/build
+>>>>>>> upstream/main

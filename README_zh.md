@@ -4,7 +4,7 @@
 ## ✳️ 概述
 
 Unitree RL Mjlab 是一个基于 [mjlab](https://github.com/mujocolab/mjlab.git) 构建的强化学习项目，
-使用 MuJoCo 作为物理仿真后端，当前支持 Unitree Go2、Unitree G1 和 Unitree H1_2 机器人。
+使用 MuJoCo 作为物理仿真后端，当前支持 Unitree Go2, A2, As2, G1, R1, H1_2 和 H2 机器人。
 
 Mjlab 结合了 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的成熟高层 API 与 
 [MuJoCo](https://github.com/google-deepmind/mujoco_warp) 的高精度物理引擎，
@@ -42,22 +42,24 @@ Mjlab 结合了 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的成熟高�
 运行以下命令进行速度跟踪训练：
 
 ```bash
-python scripts/train.py Mjlab-Velocity-Flat-Unitree-G1 --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
 ```
 
 多 GPU 训练：使用 --gpu-ids 扩展到多块 GPU：
 
 ```bash
-python scripts/train.py Mjlab-Velocity-Flat-Unitree-G1 \
+python scripts/train.py Unitree-G1-Flat \
   --gpu-ids 0 1 \
   --env.scene.num-envs=4096
 ```
 
 - 第一个参数(如 Mjlab-Velocity-Flat-Unitree-G1)为必选参数，确定要启用的训练环境。可选：
-  - Mjlab-Velocity-Flat-Unitree-Go2
-  - Mjlab-Velocity-Flat-Unitree-G1
-  - Mjlab-Velocity-Flat-Unitree-G1-23DOF
-  - Mjlab-Velocity-Flat-Unitree-H1_2
+  - Unitree-Go2-Flat
+  - Unitree-G1-Flat
+  - Unitree-G1-23Dof-Flat
+  - Unitree-H1_2-Flat
+  - Unitree-A2-Flat
+  - Unitree-R1-Flat
 
 > [!NOTE]
 > 更多有关详细说明，请参阅 mjlab 文档
@@ -75,21 +77,26 @@ python scripts/train.py Mjlab-Velocity-Flat-Unitree-G1 \
 
 ```bash
 python scripts/csv_to_npz.py \
---input-file mjlab/motions/g1/dance1_subject2.csv \
+--input-file src/assets/motions/g1/dance1_subject2.csv \
 --output-name dance1_subject2.npz \
 --input-fps 30 \
---output-fps 50
+--output-fps 50 \
+--robot g1 # g1 or g1_23dof
 ```
 
-**npz文件默认保存路径为**：`mjlab/motions/g1/...`
+**npz文件默认保存路径为**：`src/motions/g1/...`
 
 #### 2.2 训练
 
 确保有可用的npz文件之后，执行以下指令进行训练：
 
 ```bash
-python scripts/train.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Tracking-No-State-Estimation --motion_file=src/assets/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
 ```
+
+可用任务:
+  - Unitree-G1-Tracking-No-State-Estimation
+  - Unitree-G1-23Dof-Tracking-No-State-Estimation
 
 </div>
 
@@ -116,17 +123,17 @@ python scripts/train.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motio
 
 查看速度跟踪训练效果：
 ```bash
-python scripts/play.py Mjlab-Velocity-Flat-Unitree-G1 --checkpoint_file=logs/rsl_rl/g1_velocity/2026-xx-xx_xx-xx-xx/model_xx.pt
+python scripts/play.py Unitree-G1-Flat --checkpoint_file=logs/rsl_rl/g1_velocity/2026-xx-xx_xx-xx-xx/model_xx.pt
 ```
 
 查看动作模仿训练效果：
 ```bash
-python scripts/play.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motions/g1/dance1_subject2.npz --checkpoint_file=logs/rsl_rl/g1_tracking/2026-xx-xx_xx-xx-xx/model_xx.pt
+python scripts/play.py Unitree-G1-Tracking-No-State-Estimation --motion_file=src/assets/motions/g1/dance1_subject2.npz --checkpoint_file=logs/rsl_rl/g1_tracking/2026-xx-xx_xx-xx-xx/model_xx.pt
 ```
 
 **说明**：
 
-- 训练时在每次保存模型时会同步导出 policy.onnx 和 policy.onnx.data 文件在同层目录下，可用于实物部署。
+- 训练时在每次保存模型时会同步导出 policy.onnx 文件在同层目录下，可用于实物部署。
 
 **效果**：
 
@@ -157,7 +164,7 @@ python scripts/play.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motion
 
 #### 4.4 编译
 以 Unitree G1 速度控制为例（其他机器人同理）。
-将策略文件（`policy.onnx` 和 `policy.onnx.data`）放入`deploy/robots/g1/config/policy/velocity/vo/exported` 下，然后执行：
+将策略文件（`policy.onnx`）放入`deploy/robots/g1/config/policy/velocity/vo/exported` 下，然后执行：
 
 ```bash
 cd deploy/robots/g1
@@ -167,7 +174,36 @@ cmake .. && make
 
 #### 4.5 部署
 
-在编译完成后，执行以下指令：
+## 4.5.1 仿真部署
+
+在实物部署前，建议使用[unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco)进行仿真部署，防止实物机器人出现异常动作。本框架已将其集成。
+
+编译unitree_mujoco：
+
+```bash
+cd simulate
+mkdir build && cd build
+cmake .. && make -j8
+```
+
+启动仿真器(注意此处需连接上手柄才能启动)：
+
+```bash
+./simulate/build/unitree_mujoco
+```
+
+可在 `simulate/config` 中选择对应机器人
+
+启动仿真控制程序：
+
+```bash
+cd deploy/robots/g1/build
+./g1_ctrl --network=lo
+```
+
+## 4.5.2 实物部署
+
+启动实物控制程序：
 
 ```bash
 cd deploy/robots/g1/build
@@ -175,7 +211,7 @@ cd deploy/robots/g1/build
 ```
 
 **参数说明**：
-- `network`: 连接机器人网卡名称，如 `enp5s0`
+- `network`: 连接机器人网卡名称，仿真部署使用 `lo`，实物机器人如 `enp5s0`(可使用 `ifconfig` 指令查看)
 
 </div>
 
