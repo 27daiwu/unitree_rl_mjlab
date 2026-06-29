@@ -9,7 +9,7 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
 2. 使用 MuJoCo 模型播放机器人动作
 3. 暂停、逐帧、调速、循环播放
 4. 设置裁剪起点/终点
-5. 同步裁剪所有逐帧字段并保存新 NPZ
+5. 同步裁剪所有逐帧字段并保存新 NPZ（默认未压缩，兼容 MJLab C++/cnpy）
 6. 可选：裁剪后重新计算常见速度字段
 7. 独立浮动进度条与播放/快进/裁剪按钮
 
@@ -17,11 +17,14 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
     pip install numpy mujoco glfw  # tkinter 通常由系统 python3-tk 提供
 
 示例：
-    python scripts/npz_player_cropper_gui.py \
-        --input mjlab/motions/g1/bencaogangmu_crop.npz \
-        --output mjlab/motions/g1/bencaogangmu_1.npz \
-        --model-xml mjlab/asset_zoo/robots/unitree_g1/xmls/g1.xml
-        --no-loop
+python scripts/npz_player_cropper_gui.py \
+  --input mjlab/motions/g1/bencaogangmu.npz \
+  --output mjlab/motions/g1/bencaogangmu_crop.npz \
+  --model-xml src/assets/robots/unitree_g1/xmls/g1.xml \
+  --no-loop
+
+注意：默认使用 np.savez 保存未压缩 NPZ，避免生成 compress_type=8，导致 MJLab C++/cnpy 读取失败。
+如确实需要压缩体积，可显式添加 --compressed-output。
 
 如果 NPZ 字段无法自动识别，可手动指定：
     python npz_player_cropper_gui.py \
@@ -742,10 +745,21 @@ class MotionPlayer:
 
         output = self.motion.crop(start, end, self.args.recalc_velocity)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(self.output_path, **output)
+
+        # 重要：MJLab deploy 侧常用的 C++/cnpy 读取链路通常只兼容未压缩 NPZ。
+        # np.savez_compressed 会生成 ZIP deflate 条目（compress_type=8），
+        # 可能触发 load_the_npy_file: failed fread。
+        # 因此默认使用 np.savez，生成 compress_type=0 的未压缩 NPZ。
+        if self.args.compressed_output:
+            np.savez_compressed(self.output_path, **output)
+            save_mode = "压缩 NPZ, compress_type=8"
+        else:
+            np.savez(self.output_path, **output)
+            save_mode = "未压缩 NPZ, compress_type=0, MJLab/C++ 兼容"
 
         print(
             f"\n已保存裁剪文件：{self.output_path}\n"
+            f"保存格式：{save_mode}\n"
             f"帧范围：[ {start}, {end} ]，共 {end - start + 1} 帧，"
             f"时长 {(end - start + 1) / self.motion.fps:.3f} 秒"
         )
@@ -953,6 +967,14 @@ def parse_args() -> argparse.Namespace:
         help="保存裁剪文件时重算已存在的常见速度字段",
     )
     parser.add_argument(
+        "--compressed-output",
+        action="store_true",
+        help=(
+            "使用 np.savez_compressed 保存压缩 NPZ。默认关闭，"
+            "因为 MJLab deploy 的 C++/cnpy 读取链路通常需要未压缩 NPZ。"
+        ),
+    )
+    parser.add_argument(
         "--no-controller",
         action="store_true",
         help="不显示独立浮动控制器，仅使用键盘快捷键",
@@ -1000,5 +1022,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
