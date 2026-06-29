@@ -50,7 +50,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     debug_vis=True,
     viz=RayCastSensorCfg.VizCfg(show_normals=True),
   )
-    """Create base velocity tracking task configuration."""
+
 
     ##
     # Observations
