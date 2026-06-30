@@ -10,12 +10,7 @@ FSM:
     Walk:
       id: 4 
       type: RLBase
-<<<<<<< HEAD
-    Walk_realsense:
-=======
-
     WalkPro:
->>>>>>> a5cd658 (更新G1机器人的状态机配置，移除盲行模式并添加WalkPro状态)
       id: 5
       type: RLBase
 
@@ -23,9 +18,9 @@ FSM:
       id: 6
       type: Mimic
 
-    mengguwu:
-      id: 7
-      type: Mimic
+    # bcgm:
+    #   id: 7
+    #   type: Mimic
 
 
   Passive:
@@ -52,11 +47,7 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
       Walk: RT + B.on_pressed
-<<<<<<< HEAD
-      Walk_realsense: RT + Y.on_pressed
-=======
       WalkPro: RT + Y.on_pressed
->>>>>>> a5cd658 (更新G1机器人的状态机配置，移除盲行模式并添加WalkPro状态)
 
     kp: [
       100,100,100,150,40,40,
@@ -95,7 +86,7 @@ FSM:
       transitions: 
         Passive: LT + B.on_pressed
         Mimic_Dance1_subject2: RB + A.on_pressed
-        mengguwu: RB + X.on_pressed
+        bcgm: RB + X.on_pressed
 
       policy_dir: config/policy/walk
 
@@ -105,13 +96,6 @@ FSM:
       Velocity: RT + A.on_pressed
       Walk: RT + B.on_pressed
     policy_dir: config/policy/walkpro
-
-  # Blind:
-  #     transitions:
-  #       Passive: LT + B.on_pressed
-  #       Mimic_Dance1_subject2: RB + A.on_pressed
-
-  #     policy_dir: config/policy/blind
 
   Mimic_Dance1_subject2:
     transitions:
@@ -124,15 +108,15 @@ FSM:
     time_end: 1000.0
     end_state: Walk
 
-  mengguwu:
-    transitions:
-      Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
-      Walk: RT + B.on_pressed
+  # bcgm:
+  #   transitions:
+  #     Passive: LT + B.on_pressed
+  #     Velocity: RT + A.on_pressed
+  #     Walk: RT + B.on_pressed
 
-    motion_file: config/policy/mimic/mengguwu/params/mengguwu.npz
-    policy_dir: config/policy/mimic/mengguwu/
-    time_start: 0.0
-    time_end: 1000.0
-    end_state: Walk
+  #   motion_file: config/policy/mimic/bcgm/params/bcgm.npz
+  #   policy_dir: config/policy/mimic/bcgm/
+  #   time_start: 0.0
+  #   time_end: 1000.0
+  #   end_state: Walk
 
