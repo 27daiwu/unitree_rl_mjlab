@@ -51,10 +51,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     viz=RayCastSensorCfg.VizCfg(show_normals=True),
   )
 
-
-    ##
-    # Observations
-    ##
+  ##
+  # Observations
+  ##
 
   actor_terms = {
     "base_ang_vel": ObservationTermCfg(
@@ -146,9 +145,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
-    ##
-    # Actions
-    ##
+  ##
+  # Actions
+  ##
 
   actions: dict[str, ActionTermCfg] = {
     "joint_pos": JointPositionActionCfg(
@@ -159,9 +158,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     )
   }
 
-    ##
-    # Commands
-    ##
+  ##
+  # Commands
+  ##
 
   commands: dict[str, CommandTermCfg] = {
     "twist": UniformVelocityCommandCfg(
@@ -180,9 +179,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     )
   }
 
-    ##
-    # Events
-    ##
+  ##
+  # Events
+  ##
 
   events = {
     "reset_base": EventTermCfg(
@@ -255,9 +254,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
-    ##
-    # Rewards
-    ##
+  ##
+  # Rewards
+  ##
 
   rewards = {
     "track_linear_velocity": RewardTermCfg(
@@ -354,9 +353,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
-    ##
-    # Terminations
-    ##
+  ##
+  # Terminations
+  ##
 
   terminations = {
     "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
@@ -366,9 +365,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
-    ##
-    # Curriculum
-    ##
+  ##
+  # Curriculum
+  ##
 
   curriculum = {
     "terrain_levels": CurriculumTermCfg(
@@ -387,9 +386,9 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
-    ##
-    # Assemble and return
-    ##
+  ##
+  # Assemble and return
+  ##
 
   return ManagerBasedRlEnvCfg(
     scene=SceneCfg(
