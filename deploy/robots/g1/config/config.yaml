@@ -10,17 +10,14 @@ FSM:
     Walk:
       id: 4 
       type: RLBase
-    WalkPro:
-      id: 5
-      type: RLBase
 
     Mimic_Dance1_subject2:
       id: 6
       type: Mimic
 
-    # bcgm:
-    #   id: 7
-    #   type: Mimic
+    bcgm:
+      id: 7
+      type: Mimic
 
 
   Passive:
@@ -47,7 +44,6 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
       Walk: RT + B.on_pressed
-      WalkPro: RT + Y.on_pressed
 
     kp: [
       100,100,100,150,40,40,
@@ -90,13 +86,6 @@ FSM:
 
       policy_dir: config/policy/walk
 
-  WalkPro:
-    transitions:
-      Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
-      Walk: RT + B.on_pressed
-    policy_dir: config/policy/walkpro
-
   Mimic_Dance1_subject2:
     transitions:
       Passive: LT + B.on_pressed
@@ -108,15 +97,15 @@ FSM:
     time_end: 1000.0
     end_state: Walk
 
-  # bcgm:
-  #   transitions:
-  #     Passive: LT + B.on_pressed
-  #     Velocity: RT + A.on_pressed
-  #     Walk: RT + B.on_pressed
+  bcgm:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+      Walk: RT + B.on_pressed
 
-  #   motion_file: config/policy/mimic/bcgm/params/bcgm.npz
-  #   policy_dir: config/policy/mimic/bcgm/
-  #   time_start: 0.0
-  #   time_end: 1000.0
-  #   end_state: Walk
+    motion_file: config/policy/mimic/bcgm/params/bcgm.npz
+    policy_dir: config/policy/mimic/bcgm/
+    time_start: 0.0
+    time_end: 1000.0
+    end_state: Walk
 
