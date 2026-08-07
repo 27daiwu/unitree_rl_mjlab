@@ -1,6 +1,7 @@
 """Script to train RL agent with RSL-RL."""
 
 import logging
+import math
 import os
 import sys
 from dataclasses import asdict, dataclass, field
@@ -10,14 +11,29 @@ from typing import Literal, cast
 
 import tyro
 
+import mjlab
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
-from mjlab.tasks.tracking.mdp import MotionCommandCfg
+from mjlab.tasks.tracking.mdp import MotionCommandCfg as MjlabMotionCommandCfg
 from mjlab.utils.gpu import select_gpus
 from mjlab.utils.os import dump_yaml, get_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
+from src.tasks.tracking.mdp import MotionCommandCfg
+
+
+EXPECTED_NO_STATE_ACTOR_TERMS = (
+  "motion_command",
+  "motion_anchor_ori_b",
+  "base_ang_vel",
+  "joint_pos_rel",
+  "joint_vel_rel",
+  "last_action",
+)
+EXPECTED_NO_STATE_ACTOR_DIM = 154
+FORBIDDEN_NO_STATE_ACTOR_TERMS = {"motion_anchor_pos_b", "base_lin_vel"}
+MOTION_COMMAND_CFG_TYPES = (MotionCommandCfg, MjlabMotionCommandCfg)
 
 
 @dataclass(frozen=True)
@@ -63,7 +79,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   # Check if this is a tracking task by checking for motion command.
   is_tracking_task = "motion" in cfg.env.commands and isinstance(
-    cfg.env.commands["motion"], MotionCommandCfg
+    cfg.env.commands["motion"], MOTION_COMMAND_CFG_TYPES
   )
 
   if is_tracking_task:
@@ -73,7 +89,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     if not motion_path.exists():
       raise FileNotFoundError(f"Motion file not found: {motion_path}")
     motion_cmd = cfg.env.commands["motion"]
-    assert isinstance(motion_cmd, MotionCommandCfg)
+    assert isinstance(motion_cmd, MOTION_COMMAND_CFG_TYPES)
     motion_cmd.motion_file = str(motion_path)
     print(f"[INFO] Using motion file: {motion_cmd.motion_file}")
 
@@ -92,6 +108,8 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   env = ManagerBasedRlEnv(
     cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
   )
+
+  _print_and_validate_actor_observations(env, task_id, rank)
 
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 
@@ -140,6 +158,42 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   )
 
   env.close()
+
+
+def _print_and_validate_actor_observations(
+  env: ManagerBasedRlEnv, task_id: str, rank: int
+) -> None:
+  obs_manager = env.observation_manager
+  actor_terms = tuple(obs_manager.active_terms["actor"])
+  actor_term_dims = tuple(obs_manager.group_obs_term_dim["actor"])
+  actor_dim = math.prod(obs_manager.group_obs_dim["actor"])
+
+  if rank == 0:
+    print("[INFO] Final actor observation terms:")
+    for name, dims in zip(actor_terms, actor_term_dims, strict=True):
+      print(f"[INFO]   {name}: {dims} -> {math.prod(dims)}")
+    print(f"[INFO] Final actor observation dim: {actor_dim}")
+
+  if not task_id.startswith("Unitree-G1-Tracking-No-State-Estimation"):
+    return
+
+  forbidden = FORBIDDEN_NO_STATE_ACTOR_TERMS.intersection(actor_terms)
+  if forbidden:
+    raise RuntimeError(
+      "No-State-Estimation actor observation contains deployment-unavailable "
+      f"terms: {sorted(forbidden)}"
+    )
+  if actor_terms != EXPECTED_NO_STATE_ACTOR_TERMS:
+    raise RuntimeError(
+      "Unexpected No-State-Estimation actor observation order: "
+      f"{actor_terms}; expected {EXPECTED_NO_STATE_ACTOR_TERMS}"
+    )
+  if actor_dim != EXPECTED_NO_STATE_ACTOR_DIM:
+    hint = " This is the old 160-D state-estimation actor obs." if actor_dim == 160 else ""
+    raise RuntimeError(
+      "Unexpected No-State-Estimation actor observation dim: "
+      f"{actor_dim}; expected {EXPECTED_NO_STATE_ACTOR_DIM}.{hint}"
+    )
 
 
 def launch_training(task_id: str, args: TrainConfig | None = None):

@@ -19,3 +19,25 @@ register_mjlab_task(
   rl_cfg=unitree_g1_tracking_ppo_runner_cfg(),
   runner_cls=MotionTrackingOnPolicyRunner,
 )
+
+register_mjlab_task(
+  task_id="Unitree-G1-Tracking-No-State-Estimation-Stage2",
+  env_cfg=unitree_g1_flat_tracking_env_cfg(
+    has_state_estimation=False, training_stage="stage2"
+  ),
+  play_env_cfg=unitree_g1_flat_tracking_env_cfg(has_state_estimation=False, play=True),
+  rl_cfg=unitree_g1_tracking_ppo_runner_cfg(run_name="stage2"),
+  runner_cls=MotionTrackingOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Unitree-G1-Tracking-No-State-Estimation-Legacy",
+  env_cfg=unitree_g1_flat_tracking_env_cfg(
+    has_state_estimation=False, training_stage="legacy"
+  ),
+  play_env_cfg=unitree_g1_flat_tracking_env_cfg(
+    has_state_estimation=False, play=True, training_stage="legacy"
+  ),
+  rl_cfg=unitree_g1_tracking_ppo_runner_cfg(run_name="legacy"),
+  runner_cls=MotionTrackingOnPolicyRunner,
+)

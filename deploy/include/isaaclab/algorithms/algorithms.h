@@ -4,6 +4,7 @@
 #pragma once
 
 #include "onnxruntime_cxx_api.h"
+#include <algorithm>
 #include <iostream>
 #include <mutex>
 
@@ -89,6 +90,9 @@ public:
         auto floatarr = output_tensor.front().GetTensorMutableData<float>();
         std::lock_guard<std::mutex> lock(act_mtx_);
         std::memcpy(action.data(), floatarr, output_shape[1] * sizeof(float));
+        for (auto& value : action) {
+            value = std::clamp(value, -1.0f, 1.0f);
+        }
         return action;
     }
 

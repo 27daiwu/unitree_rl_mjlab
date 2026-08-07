@@ -113,6 +113,9 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
     if (cfg["end_state"]) {
         end_state = cfg["end_state"].as<std::string>();
     }
+    if (cfg["joint_target_blend_s"]) {
+        joint_target_blend_s_ = std::max(0.0f, cfg["joint_target_blend_s"].as<float>());
+    }
 
     env = std::make_unique<isaaclab::ManagerBasedRLEnv>(
         YAML::LoadFile(policy_dir / "params" / "deploy.yaml"),
@@ -129,7 +132,19 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
     );
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); }, // bad orientation
+            [this]()->bool{
+                if (safety_exit_latched_) {
+                    return true;
+                }
+                if (safety_guard_.shouldExitToPassive(FSMState::lowstate.get(), env.get())) {
+                    safety_exit_latched_ = true;
+                    safety_exit_reason_ = safety_guard_.lastReason();
+                    spdlog::warn("[SafetyGuard] Exit Mimic state '{}' to Passive: {}",
+                                 this->getStateString(), safety_exit_reason_);
+                    return true;
+                }
+                return false;
+            },
             FSMStringMap.right.at("Passive")
         )
     );
@@ -137,6 +152,10 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
 
 void State_Mimic::enter()
 {
+    safety_guard_.reset();
+    safety_exit_latched_ = false;
+    safety_exit_reason_.clear();
+
     // set gain
     for (int i = 0; i < env->robot->data.joint_stiffness.size(); i++)
     {
@@ -145,6 +164,13 @@ void State_Mimic::enter()
         lowcmd->msg_.motor_cmd()[i].dq() = 0;
         lowcmd->msg_.motor_cmd()[i].tau() = 0;
     }
+
+    blend_start_joint_pos_.resize(env->robot->data.joint_ids_map.size());
+    for (int i = 0; i < env->robot->data.joint_ids_map.size(); i++) {
+        const int motor_id = static_cast<int>(env->robot->data.joint_ids_map[i]);
+        blend_start_joint_pos_[i] = lowstate->msg_.motor_state()[motor_id].q();
+    }
+    blend_start_time_ = std::chrono::steady_clock::now();
 
     motion = motion_; // set for specific motion
     env->reset();
@@ -169,7 +195,9 @@ void State_Mimic::enter()
         {
             env->robot->update();
             motion->update(env->episode_length * env->step_dt + time_range_[0]);
-            env->step();
+            if (!safety_exit_latched_) {
+                env->step();
+            }
 
             // Sleep
             std::this_thread::sleep_until(sleepTill);
@@ -181,8 +209,48 @@ void State_Mimic::enter()
 
 void State_Mimic::run()
 {
+    if (!safety_exit_latched_ &&
+        safety_guard_.shouldExitToPassive(FSMState::lowstate.get(), env.get())) {
+        safety_exit_latched_ = true;
+        safety_exit_reason_ = safety_guard_.lastReason();
+        spdlog::warn("[SafetyGuard] Immediate damping before FSM transition: {}",
+                     safety_exit_reason_);
+    }
+
+    if (safety_exit_latched_) {
+        static const auto passive_kd =
+            param::config["FSM"]["Passive"]["kd"].as<std::vector<float>>();
+        const size_t n = std::min(lowcmd->msg_.motor_cmd().size(),
+                                  lowstate->msg_.motor_state().size());
+
+        for (size_t i = 0; i < n; ++i) {
+            auto& motor = lowcmd->msg_.motor_cmd()[i];
+            motor.q() = lowstate->msg_.motor_state()[i].q();
+            motor.kp() = 0.0f;
+            motor.kd() = i < passive_kd.size() ? passive_kd[i] : 3.0f;
+            motor.dq() = 0.0f;
+            motor.tau() = 0.0f;
+        }
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const float blend_t = joint_target_blend_s_ > 0.0f
+        ? std::clamp(
+            std::chrono::duration<float>(now - blend_start_time_).count()
+              / joint_target_blend_s_,
+            0.0f,
+            1.0f)
+        : 1.0f;
+    const float blend = blend_t * blend_t * blend_t
+        * (10.0f - 15.0f * blend_t + 6.0f * blend_t * blend_t);
+
     auto action = env->action_manager->processed_actions();
     for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
-        lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+        float target = action[i];
+        if (i < blend_start_joint_pos_.size() && blend < 1.0f) {
+            target = (1.0f - blend) * blend_start_joint_pos_[i] + blend * target;
+        }
+        lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = target;
     }
 }

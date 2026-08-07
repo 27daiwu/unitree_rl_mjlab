@@ -34,6 +34,9 @@ public:
         if(!cfg["clip"].IsNull()) {
             _clip = cfg["clip"].as<std::vector<std::vector<float> >>();
         }
+        if(cfg["raw_clip"].IsDefined() && !cfg["raw_clip"].IsNull()) {
+            _raw_clip = cfg["raw_clip"].as<float>();
+        }
     }
 
     virtual void process_actions(std::vector<float> actions)
@@ -42,6 +45,7 @@ public:
         _raw_actions = actions;
         for(int i(0); i<_action_dim; ++i)
         {
+            _raw_actions[i] = std::clamp(_raw_actions[i], -_raw_clip, _raw_clip);
             if(!_scale.empty()) {
                 _processed_actions[i] = _raw_actions[i] * _scale[i];
             } else {
@@ -90,6 +94,7 @@ protected:
     std::vector<float> _scale;
     std::vector<float> _offset;
     std::vector<std::vector<float> > _clip;
+    float _raw_clip = 1.0f;
 };
 
 

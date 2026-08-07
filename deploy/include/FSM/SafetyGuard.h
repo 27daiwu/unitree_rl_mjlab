@@ -22,10 +22,16 @@ public:
     // 单位：rad/s。关节速度异常大时退出，防止摔倒后 policy 继续乱甩。
     float motor_dq = 26.0f;
 
+    // 单位：m。真实机器人没有全局 base height/contact sensor，这里用腿部关节
+    // 做保守高度估计；过低通常意味着 pelvis/torso 已接近或接触地面。
+    float min_body_height = 0.52f;
+    float hard_body_height = 0.38f;
+
     // 连续触发时间。FSM 是 1 kHz，不要只看单帧。
     float soft_hold_s = 0.12f;
     float gyro_hold_s = 0.08f;
     float motor_dq_hold_s = 0.08f;
+    float height_hold_s = 0.08f;
   };
 
   SafetyGuard() = default;
@@ -35,6 +41,7 @@ public:
     soft_tilt_time_ = 0.0f;
     gyro_time_ = 0.0f;
     motor_dq_time_ = 0.0f;
+    height_time_ = 0.0f;
     last_reason_.clear();
   }
 
@@ -73,6 +80,20 @@ public:
     accumulate(abs_rp > cfg_.soft_roll_pitch, soft_tilt_time_, dt);
     if (soft_tilt_time_ > cfg_.soft_hold_s) {
       last_reason_ = "soft roll/pitch timeout";
+      return true;
+    }
+
+    const float estimated_height = estimateBodyHeight(lowstate, roll, pitch);
+    if (estimated_height > 0.0f && estimated_height < cfg_.hard_body_height) {
+      last_reason_ = "estimated torso/pelvis ground contact";
+      return true;
+    }
+
+    accumulate(
+      estimated_height > 0.0f && estimated_height < cfg_.min_body_height,
+      height_time_, dt);
+    if (height_time_ > cfg_.height_hold_s) {
+      last_reason_ = "estimated body height too low";
       return true;
     }
 
@@ -130,6 +151,28 @@ private:
     }
   }
 
+  template <typename LowStateT>
+  static float estimateBodyHeight(const LowStateT* lowstate, float roll, float pitch) {
+    const auto& motors = lowstate->msg_.motor_state();
+    if (motors.size() < 12) {
+      return -1.0f;
+    }
+
+    const auto leg_height = [&motors](int offset) -> float {
+      constexpr float thigh_len = 0.30f;
+      constexpr float shank_len = 0.30f;
+      constexpr float pelvis_to_hip_z = 0.20f;
+      const float hip_pitch = motors[offset + 0].q();
+      const float knee = motors[offset + 3].q();
+      return pelvis_to_hip_z
+        + thigh_len * std::cos(hip_pitch)
+        + shank_len * std::cos(hip_pitch + knee);
+    };
+
+    const float height = 0.5f * (leg_height(0) + leg_height(6));
+    return height * std::max(0.0f, std::cos(roll) * std::cos(pitch));
+  }
+
   Config cfg_;
   bool has_last_time_ = false;
   std::chrono::steady_clock::time_point last_time_;
@@ -137,5 +180,6 @@ private:
   float soft_tilt_time_ = 0.0f;
   float gyro_time_ = 0.0f;
   float motor_dq_time_ = 0.0f;
+  float height_time_ = 0.0f;
   std::string last_reason_;
 };

@@ -113,6 +113,36 @@ def motion_global_body_angular_velocity_error_exp(
   return torch.exp(-error.mean(-1) / std**2)
 
 
+def motion_joint_position_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+  command = cast(MotionCommand, env.command_manager.get_term(command_name))
+  error = torch.square(command.joint_pos - command.robot_joint_pos).mean(dim=-1)
+  return torch.exp(-error / std**2)
+
+
+def motion_joint_velocity_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+  command = cast(MotionCommand, env.command_manager.get_term(command_name))
+  error = torch.square(command.joint_vel - command.robot_joint_vel).mean(dim=-1)
+  return torch.exp(-error / std**2)
+
+
+def undesired_contact_cost(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  force_threshold: float = 10.0,
+) -> torch.Tensor:
+  sensor: ContactSensor = env.scene[sensor_name]
+  data = sensor.data
+  if data.force_history is not None:
+    force_mag = torch.norm(data.force_history, dim=-1)
+    return (force_mag > force_threshold).any(dim=-1).float().sum(dim=-1)
+  assert data.found is not None
+  return torch.any(data.found, dim=-1).float()
+
+
 def self_collision_cost(
   env: ManagerBasedRlEnv,
   sensor_name: str,

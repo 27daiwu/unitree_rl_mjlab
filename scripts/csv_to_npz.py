@@ -30,6 +30,10 @@ class MotionLoader:
     output_fps: int,
     device: torch.device | str,
     line_range: tuple[int, int] | None = None,
+    startup_transition_s: float = 2.0,
+    default_root_pos: torch.Tensor | None = None,
+    default_root_quat: torch.Tensor | None = None,
+    default_joint_pos: torch.Tensor | None = None,
   ):
     self.motion_file = motion_file
     self.input_fps = input_fps
@@ -39,8 +43,14 @@ class MotionLoader:
     self.current_idx = 0
     self.device = device
     self.line_range = line_range
+    self.startup_transition_s = startup_transition_s
+    self.default_root_pos = default_root_pos
+    self.default_root_quat = default_root_quat
+    self.default_joint_pos = default_joint_pos
+    self.transition_frames = 0
     self._load_motion()
     self._interpolate_motion()
+    self._prepend_startup_transition()
     self._compute_velocities()
 
   def _load_motion(self):
@@ -95,6 +105,65 @@ class MotionLoader:
       f"input fps: {self.input_fps}, "
       f"output frames: {self.output_frames}, "
       f"output fps: {self.output_fps}"
+    )
+
+  def _smoothstep5(self, x: torch.Tensor) -> torch.Tensor:
+    return x * x * x * (10.0 - 15.0 * x + 6.0 * x * x)
+
+  def _prepend_startup_transition(self):
+    if self.startup_transition_s <= 0.0:
+      return
+    if (
+      self.default_root_pos is None
+      or self.default_root_quat is None
+      or self.default_joint_pos is None
+    ):
+      raise ValueError("Default root/joint state is required for startup transition")
+
+    transition_frames = int(round(self.startup_transition_s * self.output_fps))
+    if transition_frames <= 0:
+      return
+
+    blend = torch.arange(
+      transition_frames, device=self.device, dtype=torch.float32
+    ) / float(transition_frames)
+    blend = self._smoothstep5(blend)
+
+    start_root_pos = self.default_root_pos.to(self.device, dtype=torch.float32)
+    start_root_quat = self.default_root_quat.to(self.device, dtype=torch.float32)
+    start_joint_pos = self.default_joint_pos.to(self.device, dtype=torch.float32)
+
+    first_root_pos = self.motion_base_poss[:1]
+    first_root_quat = self.motion_base_rots[:1]
+    first_joint_pos = self.motion_dof_poss[:1]
+
+    transition_root_pos = self._lerp(
+      start_root_pos.unsqueeze(0), first_root_pos, blend.unsqueeze(1)
+    )
+    transition_root_quat = self._slerp(
+      start_root_quat.unsqueeze(0).repeat(transition_frames, 1),
+      first_root_quat.repeat(transition_frames, 1),
+      blend,
+    )
+    transition_joint_pos = self._lerp(
+      start_joint_pos.unsqueeze(0), first_joint_pos, blend.unsqueeze(1)
+    )
+
+    self.motion_base_poss = torch.cat(
+      [transition_root_pos, self.motion_base_poss], dim=0
+    )
+    self.motion_base_rots = torch.cat(
+      [transition_root_quat, self.motion_base_rots], dim=0
+    )
+    self.motion_dof_poss = torch.cat(
+      [transition_joint_pos, self.motion_dof_poss], dim=0
+    )
+    self.transition_frames = transition_frames
+    self.output_frames = self.motion_base_poss.shape[0]
+    self.duration = (self.output_frames - 1) * self.output_dt
+    print(
+      f"Prepended startup transition: {transition_frames} frames "
+      f"({transition_frames / self.output_fps:.2f}s)"
     )
 
   def _lerp(
@@ -192,21 +261,28 @@ def run_sim(
   output_path,
   render,
   line_range,
+  startup_transition_s,
   renderer: OffscreenRenderer | None = None,
 ):
+  robot: Entity = scene["robot"]
+  robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
+
   motion = MotionLoader(
     motion_file=input_file,
     input_fps=input_fps,
     output_fps=output_fps,
     device=sim.device,
     line_range=line_range,
+    startup_transition_s=startup_transition_s,
+    default_root_pos=robot.data.default_root_state[0, 0:3],
+    default_root_quat=robot.data.default_root_state[0, 3:7],
+    default_joint_pos=robot.data.default_joint_pos[0, robot_joint_indexes],
   )
-
-  robot: Entity = scene["robot"]
-  robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
 
   log: dict[str, Any] = {
     "fps": [output_fps],
+    "transition_frames": [motion.transition_frames],
+    "motion_start_frame": [motion.transition_frames],
     "joint_pos": [],
     "joint_vel": [],
     "body_pos_w": [],
@@ -318,6 +394,7 @@ def main(
   device: str = "cuda:0",
   render: bool = False,
   line_range: tuple[int, int] | None = None,
+  startup_transition_s: float = 2.0,
 ):
   """Replay motion from CSV file and output to npz file.
 
@@ -329,6 +406,8 @@ def main(
     device: Device to use.
     render: Whether to render the simulation and save a video.
     line_range: Range of lines to process from the CSV file.
+    startup_transition_s: Smooth startup transition duration in seconds. Set to
+      0.0 to preserve the original motion without prepended stand-to-motion blend.
   """
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
@@ -434,6 +513,7 @@ def main(
     output_path=output_path,
     render=render,
     line_range=line_range,
+    startup_transition_s=startup_transition_s,
     renderer=renderer,
   )
 

@@ -2,6 +2,7 @@
 
 #include "FSM/State_RLBase.h"
 #include <cnpy.h>
+#include <chrono>
 
 
 class State_Mimic : public FSMState
@@ -29,6 +30,12 @@ private:
     std::thread policy_thread;
     bool policy_thread_running = false;
     std::array<float, 2> time_range_;
+    SafetyGuard safety_guard_;
+    bool safety_exit_latched_ = false;
+    std::string safety_exit_reason_;
+    std::vector<float> blend_start_joint_pos_;
+    std::chrono::steady_clock::time_point blend_start_time_;
+    float joint_target_blend_s_ = 2.0f;
 };
 
 

@@ -303,6 +303,10 @@ class MotionCommand(CommandTerm):
       assert self.cfg.sampling_mode == "adaptive"
       self._adaptive_sampling(env_ids)
 
+    if not self.cfg.reset_robot_to_motion_state:
+      self.robot.clear_state(env_ids=env_ids)
+      return
+
     root_pos = self.body_pos_w[:, 0].clone()
     root_ori = self.body_quat_w[:, 0].clone()
     root_lin_vel = self.body_lin_vel_w[:, 0].clone()
@@ -484,6 +488,7 @@ class MotionCommandCfg(CommandTermCfg):
   adaptive_uniform_ratio: float = 0.1
   adaptive_alpha: float = 0.001
   sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
+  reset_robot_to_motion_state: bool = True
 
   @dataclass
   class VizCfg:

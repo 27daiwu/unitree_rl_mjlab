@@ -11,7 +11,6 @@ Commit: f8e20c880d9c8ec7172a13d3a88a65e3a5a88448
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
-from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.command_manager import CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -21,13 +20,12 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.tracking import mdp
-from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 import src.tasks.tracking.mdp as mdp
+from src.tasks.tracking.mdp import ClippedJointPositionActionCfg, MotionCommandCfg
 
 VELOCITY_RANGE = {
   "x": (-0.5, 0.5),
@@ -39,7 +37,9 @@ VELOCITY_RANGE = {
 }
 
 
-def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
+def make_tracking_env_cfg(
+  training_stage: str = "stage1",
+) -> ManagerBasedRlEnvCfg:
   """Create base tracking task configuration."""
 
   ##
@@ -47,7 +47,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
   ##
 
   actor_terms = {
-    "command": ObservationTermCfg(
+    "motion_command": ObservationTermCfg(
       func=mdp.generated_commands, params={"command_name": "motion"}
     ),
     "motion_anchor_pos_b": ObservationTermCfg(
@@ -70,19 +70,19 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
       params={"sensor_name": "robot/imu_ang_vel"},
       noise=Unoise(n_min=-0.2, n_max=0.2),
     ),
-    "joint_pos": ObservationTermCfg(
+    "joint_pos_rel": ObservationTermCfg(
       func=mdp.joint_pos_rel,
       noise=Unoise(n_min=-0.01, n_max=0.01),
       params={"biased": True},
     ),
-    "joint_vel": ObservationTermCfg(
+    "joint_vel_rel": ObservationTermCfg(
       func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5)
     ),
-    "actions": ObservationTermCfg(func=mdp.last_action),
+    "last_action": ObservationTermCfg(func=mdp.last_action),
   }
 
   critic_terms = {
-    "command": ObservationTermCfg(
+    "motion_command": ObservationTermCfg(
       func=mdp.generated_commands, params={"command_name": "motion"}
     ),
     "motion_anchor_pos_b": ObservationTermCfg(
@@ -103,9 +103,9 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     "base_ang_vel": ObservationTermCfg(
       func=mdp.builtin_sensor, params={"sensor_name": "robot/imu_ang_vel"}
     ),
-    "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
-    "joint_vel": ObservationTermCfg(func=mdp.joint_vel_rel),
-    "actions": ObservationTermCfg(func=mdp.last_action),
+    "joint_pos_rel": ObservationTermCfg(func=mdp.joint_pos_rel),
+    "joint_vel_rel": ObservationTermCfg(func=mdp.joint_vel_rel),
+    "last_action": ObservationTermCfg(func=mdp.last_action),
   }
 
   observations = {
@@ -126,11 +126,12 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
   ##
 
   actions: dict[str, ActionTermCfg] = {
-    "joint_pos": JointPositionActionCfg(
+    "joint_pos": ClippedJointPositionActionCfg(
       entity_name="robot",
       actuator_names=(".*",),
       scale=0.25,
       use_default_offset=True,
+      raw_clip=1.0,
     )
   }
 
@@ -204,6 +205,31 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
+  if training_stage == "stage1":
+    events.pop("push_robot", None)
+  elif training_stage == "stage2":
+    events["push_robot"].interval_range_s = (4.0, 8.0)
+    events["push_robot"].params["velocity_range"] = {
+      "x": (-0.2, 0.2),
+      "y": (-0.2, 0.2),
+      "z": (0.0, 0.0),
+      "roll": (-0.12, 0.12),
+      "pitch": (-0.12, 0.12),
+      "yaw": (-0.25, 0.25),
+    }
+  elif training_stage != "legacy":
+    raise ValueError(
+      "training_stage must be one of: 'stage1', 'stage2', or 'legacy'"
+    )
+
+  if training_stage != "legacy":
+    events["base_com"].params["ranges"] = {
+      0: (-0.02, 0.02),
+      1: (-0.02, 0.02),
+      2: (-0.02, 0.02),
+    }
+    events["foot_friction"].params["ranges"] = (0.6, 1.2)
+
   ##
   # Rewards
   ##
@@ -211,8 +237,8 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
   rewards: dict[str, RewardTermCfg] = {
     "motion_global_root_pos": RewardTermCfg(
       func=mdp.motion_global_anchor_position_error_exp,
-      weight=0.5,
-      params={"command_name": "motion", "std": 0.3},
+      weight=1.0,
+      params={"command_name": "motion", "std": 0.22},
     ),
     "motion_global_root_ori": RewardTermCfg(
       func=mdp.motion_global_anchor_orientation_error_exp,
@@ -229,6 +255,16 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
       weight=1.0,
       params={"command_name": "motion", "std": 0.4},
     ),
+    "motion_joint_pos": RewardTermCfg(
+      func=mdp.motion_joint_position_error_exp,
+      weight=0.5,
+      params={"command_name": "motion", "std": 0.20},
+    ),
+    "motion_joint_vel": RewardTermCfg(
+      func=mdp.motion_joint_velocity_error_exp,
+      weight=0.5,
+      params={"command_name": "motion", "std": 2.0},
+    ),
     "motion_body_lin_vel": RewardTermCfg(
       func=mdp.motion_global_body_linear_velocity_error_exp,
       weight=1.0,
@@ -238,6 +274,16 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
       func=mdp.motion_global_body_angular_velocity_error_exp,
       weight=1.0,
       params={"command_name": "motion", "std": 3.14},
+    ),
+    "joint_acc_l2": RewardTermCfg(
+      func=mdp.joint_acc_l2,
+      weight=-1.0e-7,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+    ),
+    "joint_torques_l2": RewardTermCfg(
+      func=mdp.joint_torques_l2,
+      weight=-1.0e-5,
+      params={"asset_cfg": SceneEntityCfg("robot", actuator_names=".*")},
     ),
     "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1e-1),
     "joint_limit": RewardTermCfg(
@@ -252,6 +298,14 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
   }
 
+  if training_stage == "legacy":
+    rewards["motion_global_root_pos"].weight = 0.5
+    rewards["motion_global_root_pos"].params["std"] = 0.3
+    rewards.pop("motion_joint_pos", None)
+    rewards.pop("motion_joint_vel", None)
+    rewards.pop("joint_acc_l2", None)
+    rewards.pop("joint_torques_l2", None)
+
   ##
   # Terminations
   ##
@@ -259,16 +313,16 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
   terminations: dict[str, TerminationTermCfg] = {
     "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
     "anchor_pos": TerminationTermCfg(
-      func=mdp.bad_anchor_pos_z_only,
-      params={"command_name": "motion", "threshold": 0.25},
+      func=mdp.bad_anchor_pos_xy_z,
+      params={"command_name": "motion", "xy_threshold": 0.45, "z_threshold": 0.22},
+    ),
+    "anchor_height_low": TerminationTermCfg(
+      func=mdp.anchor_height_below_reference,
+      params={"command_name": "motion", "threshold": 0.20},
     ),
     "anchor_ori": TerminationTermCfg(
-      func=mdp.bad_anchor_ori,
-      params={
-        "asset_cfg": SceneEntityCfg("robot"),
-        "command_name": "motion",
-        "threshold": 0.8,
-      },
+      func=mdp.bad_anchor_roll_pitch,
+      params={"command_name": "motion", "threshold": 0.55},
     ),
     "ee_body_pos": TerminationTermCfg(
       func=mdp.bad_motion_body_pos_z_only,
@@ -279,6 +333,21 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
       },
     ),
   }
+
+  if training_stage == "legacy":
+    terminations["anchor_pos"] = TerminationTermCfg(
+      func=mdp.bad_anchor_pos_z_only,
+      params={"command_name": "motion", "threshold": 0.25},
+    )
+    terminations.pop("anchor_height_low", None)
+    terminations["anchor_ori"] = TerminationTermCfg(
+      func=mdp.bad_anchor_ori,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "command_name": "motion",
+        "threshold": 0.8,
+      },
+    )
 
   ##
   # Assemble and return

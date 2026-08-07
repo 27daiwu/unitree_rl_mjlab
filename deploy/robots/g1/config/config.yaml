@@ -19,6 +19,10 @@ FSM:
       id: 7
       type: Mimic
 
+    kun:
+      id: 8
+      type: Mimic
+
 
   Passive:
     transitions: 
@@ -83,6 +87,7 @@ FSM:
         Passive: LT + B.on_pressed
         Mimic_Dance1_subject2: RB + A.on_pressed
         bcgm: RB + X.on_pressed
+        kun: RB + B.on_pressed
 
       policy_dir: config/policy/walk
 
@@ -96,6 +101,7 @@ FSM:
     time_start: 0.0
     time_end: 1000.0
     end_state: Walk
+    joint_target_blend_s: 2.0
 
   bcgm:
     transitions:
@@ -108,4 +114,18 @@ FSM:
     time_start: 0.0
     time_end: 1000.0
     end_state: Walk
+    joint_target_blend_s: 2.0
+
+  kun:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+      Walk: RT + B.on_pressed
+
+    motion_file: config/policy/mimic/kun/params/kun.npz
+    policy_dir: config/policy/mimic/bcgm/
+    time_start: 0.0
+    time_end: 1000.0
+    end_state: Walk
+    joint_target_blend_s: 2.0
 

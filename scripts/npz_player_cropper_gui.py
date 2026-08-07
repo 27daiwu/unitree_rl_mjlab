@@ -18,8 +18,8 @@ NPZ 动作播放器 + 裁剪器（MuJoCo 版）
 
 示例：
 python scripts/npz_player_cropper_gui.py \
-  --input src/assets/motions/g1/bcgm.npz \
-  --output src/assets/motions/g1/bencaogangmu_crop.npz \
+  --input src/assets/motions/g1/kun.npz \
+  --output src/assets/motions/g1/kun_crop.npz \
   --model-xml src/assets/robots/unitree_g1/xmls/g1.xml \
   --no-loop
 
