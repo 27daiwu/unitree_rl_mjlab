@@ -24,7 +24,7 @@ inline struct SimulationConfig
     int print_scene_information;
 
     int enable_elastic_band;
-    int band_attached_link = 0;
+    int band_attached_body_id = -1;
 
     void load_from_yaml(const std::string &filename)
     {

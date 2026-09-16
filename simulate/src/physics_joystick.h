@@ -3,6 +3,7 @@
 #include <iostream>
 #include <unitree/dds_wrapper/common/unitree_joystick.hpp>
 #include "joystick/joystick.h"
+#include "joystick/joystick_mapping.h"
 #include <memory>
 
 
@@ -87,4 +88,47 @@ public:
 private:
 	std::unique_ptr<Joystick> js_;
 	int max_value_;
+};
+
+
+class CustomSwitchProJoystick : public unitree::common::UnitreeJoystick
+{
+public:
+    CustomSwitchProJoystick(std::string device, int bits = 15)
+    : unitree::common::UnitreeJoystick()
+    {
+        (void)bits;
+        js_ = std::make_unique<EvdevJoystick>(device);
+        if(!js_->isFound()) {
+            std::cout << "Error: Joystick open failed." << std::endl;
+            exit(1);
+        }
+    }
+
+    void update() override
+    {
+        using Profile = joystick_mapping::CustomSwitchPro;
+        js_->getState();
+        back(js_->key_[Profile::select_key]);
+        start(js_->key_[Profile::start_key]);
+        LB(js_->key_[Profile::l1_key]);
+        RB(js_->key_[Profile::r1_key]);
+        LT(js_->key_[Profile::l2_key]);
+        RT(js_->key_[Profile::r2_key]);
+        A(js_->key_[Profile::a_key]);
+        B(js_->key_[Profile::b_key]);
+        X(js_->key_[Profile::x_key]);
+        Y(js_->key_[Profile::y_key]);
+        up(js_->axis_[Profile::dpad_y_abs] < 0);
+        right(js_->axis_[Profile::dpad_x_abs] > 0);
+        down(js_->axis_[Profile::dpad_y_abs] > 0);
+        left(js_->axis_[Profile::dpad_x_abs] < 0);
+        lx(js_->normalizedAxis(Profile::lx_abs));
+        ly(-js_->normalizedAxis(Profile::ly_abs));
+        rx(js_->normalizedAxis(Profile::rx_abs));
+        ry(-js_->normalizedAxis(Profile::ry_abs));
+    }
+
+private:
+    std::unique_ptr<EvdevJoystick> js_;
 };

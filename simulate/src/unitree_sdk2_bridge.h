@@ -31,6 +31,8 @@ public:
                 joystick = std::make_shared<XBoxJoystick>(param::config.joystick_device, param::config.joystick_bits);
             } else if(param::config.joystick_type == "switch") {
                 joystick  = std::make_shared<SwitchJoystick>(param::config.joystick_device, param::config.joystick_bits);
+            } else if(param::config.joystick_type == "custom_switchpro") {
+                joystick = std::make_shared<CustomSwitchProJoystick>(param::config.joystick_device, param::config.joystick_bits);
             } else {
                 std::cerr << "Unsupported joystick type: " << param::config.joystick_type << std::endl;
                 exit(EXIT_FAILURE);

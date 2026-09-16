@@ -22,12 +22,10 @@
 #include <fcntl.h>
 #include <sstream>
 #include <map>
+#include <array>
+#include <linux/input.h>
+#include <linux/joystick.h>
 #include "unistd.h"
-
-
-#define JS_EVENT_BUTTON 0x01 // button pressed/released
-#define JS_EVENT_AXIS 0x02   // joystick moved
-#define JS_EVENT_INIT 0x80   // initial state of device
 
 class JoystickEvent
 {
@@ -63,7 +61,7 @@ public:
   /**
    * Returns true if this event is the result of a button press.
    */
-  bool isButton()
+  bool isButton() const
   {
     return (type & JS_EVENT_BUTTON) != 0;
   }
@@ -71,7 +69,7 @@ public:
   /**
    * Returns true if this event is the result of an axis movement.
    */
-  bool isAxis()
+  bool isAxis() const
   {
     return (type & JS_EVENT_AXIS) != 0;
   }
@@ -80,7 +78,7 @@ public:
    * Returns true if this event is part of the initial state obtained when
    * the joystick is first connected to.
    */
-  bool isInitialState()
+  bool isInitialState() const
   {
     return (type & JS_EVENT_INIT) != 0;
   }
@@ -147,6 +145,9 @@ public:
    */
   bool isFound();
 
+  /** Returns the /dev/input/jsN axis number for a Linux ABS_* code. */
+  int axisNumberForAbsCode(unsigned char absCode) const;
+
   /**
    * Attempts to populate the provided JoystickEvent instance with data
    * from the joystick. Returns true if data is available, otherwise false.
@@ -155,10 +156,41 @@ public:
   void getState();
 
   JoystickEvent event_;
-  int button_[20] = {0};
-  int axis_[10] = {0};
+  std::array<int, KEY_MAX - BTN_MISC + 1> button_{};
+  std::array<int, ABS_MAX + 1> axis_{};
 
   bool sample(JoystickEvent *event);
+
+  void applyEvent(const JoystickEvent &event);
+
+private:
+  std::array<unsigned char, ABS_MAX + 1> axisMap_{};
+  unsigned char axisCount_ = 0;
+};
+
+/** Linux evdev backend used when the kernel does not create /dev/input/jsN. */
+class EvdevJoystick
+{
+public:
+  explicit EvdevJoystick(const std::string &devicePath);
+  ~EvdevJoystick();
+
+  EvdevJoystick(EvdevJoystick const &) = delete;
+  EvdevJoystick(EvdevJoystick &&) = default;
+
+  bool isFound() const;
+  bool sample(input_event *event);
+  void applyEvent(const input_event &event);
+  void getState();
+  double normalizedAxis(unsigned int code) const;
+
+  std::array<int, KEY_MAX + 1> key_{};
+  std::array<int, ABS_MAX + 1> axis_{};
+
+private:
+  int fd_ = -1;
+  std::array<input_absinfo, ABS_MAX + 1> absInfo_{};
+  std::array<bool, ABS_MAX + 1> hasAbs_{};
 };
 
 #endif

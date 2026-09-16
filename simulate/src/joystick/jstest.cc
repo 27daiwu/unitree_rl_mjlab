@@ -1,101 +1,97 @@
-#include <unistd.h>
+#include <iomanip>
 #include <iostream>
-#include <map>
+#include <string>
+#include <unistd.h>
+
 #include "joystick.h"
+#include "joystick_mapping.h"
 
-#define GAMEPAD_TYPE 1 // 1: XBOX, 0: SWITCH
-#define MAX_AXES_VALUE 32768
-#define MIN_AXES_VALUE -32768
-using namespace std;
-
-typedef union
+namespace
 {
-  struct
+using Profile = joystick_mapping::CustomSwitchPro;
+
+const char *keyName(unsigned int code)
+{
+  switch (code)
   {
-    uint8_t R1 : 1;
-    uint8_t L1 : 1;
-    uint8_t start : 1;
-    uint8_t select : 1;
-    uint8_t R2 : 1;
-    uint8_t L2 : 1;
-    uint8_t F1 : 1;
-    uint8_t F2 : 1;
-    uint8_t A : 1;
-    uint8_t B : 1;
-    uint8_t X : 1;
-    uint8_t Y : 1;
-    uint8_t up : 1;
-    uint8_t right : 1;
-    uint8_t down : 1;
-    uint8_t left : 1;
-  } components;
-  uint16_t value;
-} xKeySwitchUnion;
+    case Profile::a_key: return "A";
+    case Profile::b_key: return "B";
+    case Profile::x_key: return "X";
+    case Profile::y_key: return "Y";
+    case Profile::l1_key: return "L1";
+    case Profile::r1_key: return "R1";
+    case Profile::l2_key: return "L2";
+    case Profile::r2_key: return "R2";
+    case Profile::select_key: return "SELECT";
+    case Profile::start_key: return "START";
+    default: return "unmapped";
+  }
+}
+
+const char *axisName(unsigned int code)
+{
+  switch (code)
+  {
+    case Profile::lx_abs: return "LX";
+    case Profile::ly_abs: return "LY";
+    case Profile::rx_abs: return "RX";
+    case Profile::ry_abs: return "RY";
+    case Profile::dpad_x_abs: return "DPAD_X";
+    case Profile::dpad_y_abs: return "DPAD_Y";
+    default: return "unmapped";
+  }
+}
+} // namespace
 
 int main(int argc, char **argv)
 {
-  // Create an instance of Joystick
-  Joystick joystick("/dev/input/js0");
-
-  // Ensure that it was found and that we can use it
+  const std::string device = argc > 1
+      ? argv[1]
+      : "/dev/input/by-id/usb-057e_THUNDEROBOT_G30-event-joystick";
+  EvdevJoystick joystick(device);
   if (!joystick.isFound())
   {
-    printf("open failed.\n");
-    exit(1);
+    std::cerr << "Failed to open " << device << '\n';
+    return 1;
   }
 
-  xKeySwitchUnion unitree_key;
-  map<string, int> AxisId =
-      {
-          {"LX", 0}, // Left stick axis x
-          {"LY", 1}, // Left stick axis y
-          {"RX", 3}, // Right stick axis x
-          {"RY", 4}, // Right stick axis y
-          {"LT", 2}, // Left trigger
-          {"RT", 5}, // Right trigger
-          {"DX", 6}, // Directional pad x
-          {"DY", 7}, // Directional pad y
-      };
-
-  map<string, int> ButtonId =
-      {
-          {"X", 2},
-          {"Y", 3},
-          {"B", 1},
-          {"A", 0},
-          {"LB", 4},
-          {"RB", 5},
-          {"SELECT", 6},
-          {"START", 7},
-      };
+  std::cout << "device=" << device << " profile=" << Profile::name
+            << " backend=linux_evdev dpad_backend=ABS_HAT0X/ABS_HAT0Y\n";
+  std::cout << std::fixed << std::setprecision(4)
+            << "initial axes: LX=" << joystick.normalizedAxis(Profile::lx_abs)
+            << " LY=" << joystick.normalizedAxis(Profile::ly_abs)
+            << " RX=" << joystick.normalizedAxis(Profile::rx_abs)
+            << " RY=" << joystick.normalizedAxis(Profile::ry_abs)
+            << " DPAD_X=" << joystick.axis_[Profile::dpad_x_abs]
+            << " DPAD_Y=" << joystick.axis_[Profile::dpad_y_abs] << '\n';
+  std::cout << "Move every stick and D-pad direction, then press and release every button.\n";
 
   while (true)
   {
+    input_event event{};
+    if (!joystick.sample(&event))
+    {
+      usleep(1000);
+      continue;
+    }
+    joystick.applyEvent(event);
 
-    // Attempt to sample an event from the joystick
-    joystick.getState();
-
-    unitree_key.components.R1 = joystick.button_[ButtonId["RB"]];
-    unitree_key.components.L1 = joystick.button_[ButtonId["LB"]];
-    unitree_key.components.start = joystick.button_[ButtonId["START"]];
-    unitree_key.components.select = joystick.button_[ButtonId["SELECT"]];
-    unitree_key.components.R2 = (joystick.axis_[AxisId["RT"]] > 0);
-    unitree_key.components.L2 = (joystick.axis_[AxisId["LT"]] > 0);
-    unitree_key.components.F1 = 0;
-    unitree_key.components.F2 = 0;
-    unitree_key.components.A = joystick.button_[ButtonId["A"]];
-    unitree_key.components.B = joystick.button_[ButtonId["B"]];
-    unitree_key.components.X = joystick.button_[ButtonId["X"]];
-    unitree_key.components.Y = joystick.button_[ButtonId["Y"]];
-    unitree_key.components.up = (joystick.axis_[AxisId["DY"]] < 0);
-    unitree_key.components.right = (joystick.axis_[AxisId["DX"]] > 0);
-    unitree_key.components.down = (joystick.axis_[AxisId["DY"]] > 0);
-    unitree_key.components.left = (joystick.axis_[AxisId["DX"]] < 0);
-
-    cout << unitree_key.value << endl;
-
-    // Restrict rate
-    usleep(10000);
+    if (event.type == EV_ABS)
+    {
+      std::cout << "raw EV_ABS code=" << event.code
+                << " value=" << event.value
+                << " logical=" << axisName(event.code);
+      if (event.code == Profile::lx_abs || event.code == Profile::ly_abs ||
+          event.code == Profile::rx_abs || event.code == Profile::ry_abs)
+        std::cout << " normalized=" << joystick.normalizedAxis(event.code);
+      std::cout << '\n';
+    }
+    else if (event.type == EV_KEY)
+    {
+      std::cout << "raw EV_KEY code=" << event.code
+                << " state=" << (event.value ? "pressed" : "released")
+                << " value=" << event.value
+                << " logical=" << keyName(event.code) << '\n';
+    }
   }
-  return 0;
-};
+}

@@ -17,7 +17,9 @@
 #include "glfw_adapter.h"
 #undef private
 
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -55,35 +57,89 @@ class ElasticBand
 {
 public:
   ElasticBand(){};
-  void Advance(std::vector<double> x, std::vector<double> dx)
+  void Advance(const mjtNum *x, const mjtNum *dx)
   {
-    std::vector<double> delta_x = {0.0, 0.0, 0.0};
+    std::array<double, 3> delta_x = {0.0, 0.0, 0.0};
     delta_x[0] = point_[0] - x[0];
     delta_x[1] = point_[1] - x[1];
     delta_x[2] = point_[2] - x[2];
     double distance = sqrt(delta_x[0] * delta_x[0] + delta_x[1] * delta_x[1] + delta_x[2] * delta_x[2]);
 
-    std::vector<double> direction = {0.0, 0.0, 0.0};
+    if (!std::isfinite(distance) || distance < kDistanceEpsilon)
+    {
+      f_ = {0.0, 0.0, 0.0};
+      return;
+    }
+
+    std::array<double, 3> direction = {0.0, 0.0, 0.0};
     direction[0] = delta_x[0] / distance;
     direction[1] = delta_x[1] / distance;
     direction[2] = delta_x[2] / distance;
 
     double v = dx[0] * direction[0] + dx[1] * direction[1] + dx[2] * direction[2];
+    double magnitude = stiffness_ * (distance - length_) - damping_ * v;
+    if (!std::isfinite(magnitude))
+    {
+      f_ = {0.0, 0.0, 0.0};
+      return;
+    }
 
-    f_[0] = (stiffness_ * (distance - length_) - damping_ * v) * direction[0];
-    f_[1] = (stiffness_ * (distance - length_) - damping_ * v) * direction[1];
-    f_[2] = (stiffness_ * (distance - length_) - damping_ * v) * direction[2];
+    f_[0] = magnitude * direction[0];
+    f_[1] = magnitude * direction[1];
+    f_[2] = magnitude * direction[2];
   }
 
-
-  double stiffness_ = 200;
-  double damping_ = 100;
-  std::vector<double> point_ = {0, 0, 3};
+  static constexpr double kDistanceEpsilon = 1e-9;
+  double stiffness_ = 200.0;
+  double damping_ = 100.0;
+  std::array<double, 3> point_ = {0.0, 0.0, 3.0};
   double length_ = 0.0;
   bool enable_ = true;
-  std::vector<double> f_ = {0, 0, 0};
+  std::array<double, 3> f_ = {0.0, 0.0, 0.0};
 };
 inline ElasticBand elastic_band;
+
+void ConfigureElasticBandAttachment(const mjModel *model)
+{
+  if (param::config.enable_elastic_band != 1)
+  {
+    param::config.band_attached_body_id = -1;
+    return;
+  }
+
+  const int body_id = mj_name2id(model, mjOBJ_BODY, "torso_link");
+  if (body_id < 0)
+  {
+    std::cerr << "ELASTIC_BAND_ERROR = torso_link body not found" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+
+  param::config.band_attached_body_id = body_id;
+  std::cout << "ELASTIC_BAND_BODY = torso_link" << std::endl;
+  std::cout << "ELASTIC_BAND_BODY_ID = " << body_id << std::endl;
+  std::cout << "ELASTIC_BAND_ENABLED = " << (elastic_band.enable_ ? "YES" : "NO") << std::endl;
+}
+
+void ApplyElasticBandForce(mjData *data)
+{
+  const int body_id = param::config.band_attached_body_id;
+  if (body_id < 0)
+    return;
+
+  mjtNum *force = data->xfrc_applied + 6 * body_id;
+  if (param::config.enable_elastic_band != 1 || !elastic_band.enable_)
+  {
+    force[0] = 0.0;
+    force[1] = 0.0;
+    force[2] = 0.0;
+    return;
+  }
+
+  elastic_band.Advance(data->qpos, data->qvel);
+  force[0] = elastic_band.f_[0];
+  force[1] = elastic_band.f_[1];
+  force[2] = elastic_band.f_[2];
+}
 
 
 namespace
@@ -355,6 +411,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          ConfigureElasticBandAttachment(m);
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -385,6 +442,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          ConfigureElasticBandAttachment(m);
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -462,6 +520,7 @@ namespace
               sim.speed_changed = false;
 
               // run single step, let next iteration deal with timing
+              ApplyElasticBandForce(d);
               mj_step(m, d);
               stepped = true;
             }
@@ -486,23 +545,8 @@ namespace
                   measured = true;
                 }
 
-                // elastic band on base link
-                if (param::config.enable_elastic_band == 1)
-                {
-                  if (elastic_band.enable_)
-                  {
-                    std::vector<double> x = {d->qpos[0], d->qpos[1], d->qpos[2]};
-                    std::vector<double> dx = {d->qvel[0], d->qvel[1], d->qvel[2]};
-
-                    elastic_band.Advance(x, dx);
-
-                    d->xfrc_applied[param::config.band_attached_link] = elastic_band.f_[0];
-                    d->xfrc_applied[param::config.band_attached_link + 1] = elastic_band.f_[1];
-                    d->xfrc_applied[param::config.band_attached_link + 2] = elastic_band.f_[2];
-                  }
-                }
-
                 // call mj_step
+                ApplyElasticBandForce(d);
                 mj_step(m, d);
                 stepped = true;
 
@@ -548,6 +592,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     if (d)
     {
       sim->Load(m, d, filename);
+      ConfigureElasticBandAttachment(m);
       mj_forward(m, d);
 
       // allocate ctrlnoise
@@ -587,12 +632,6 @@ void *UnitreeSdk2BridgeThread(void *arg)
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
 
 
-  int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
-  if (body_id < 0) {
-    body_id = mj_name2id(m, mjOBJ_BODY, "base_link");
-  }
-  param::config.band_attached_link = 6 * body_id;
-  
   std::unique_ptr<UnitreeSDK2BridgeBase> interface = nullptr;
   if (m->nu > NUM_MOTOR_IDL_GO) {
     interface = std::make_unique<G1Bridge>(m, d);
@@ -625,10 +664,13 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
     if(param::config.enable_elastic_band == 1) {
       if (key==GLFW_KEY_9) {
         elastic_band.enable_ = !elastic_band.enable_;
+        std::cout << "ELASTIC_BAND_ENABLED = " << (elastic_band.enable_ ? "YES" : "NO") << std::endl;
       } else if (key==GLFW_KEY_7 || key==GLFW_KEY_UP) {
         elastic_band.length_ -= 0.1;
+        std::cout << "ELASTIC_BAND_LENGTH = " << elastic_band.length_ << std::endl;
       } else if (key==GLFW_KEY_8 || key==GLFW_KEY_DOWN) {
         elastic_band.length_ += 0.1;
+        std::cout << "ELASTIC_BAND_LENGTH = " << elastic_band.length_ << std::endl;
       }
     }
     if(key==GLFW_KEY_BACKSPACE) {
