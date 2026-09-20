@@ -44,3 +44,6 @@ link_libraries(
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)
+# Independent observation component; no viewer/DDS/policy calls in its API.
+add_library(policy_observation STATIC src/policy_observation.cc)
+target_include_directories(policy_observation PUBLIC src mujoco/include)
