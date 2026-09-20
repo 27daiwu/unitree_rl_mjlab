@@ -22,3 +22,6 @@ __pycache__/
 *.py[cod]
 doc/archive
 scripts/archive
+# Local simulation tests, audit scripts/results, and historical audit reports.
+/simulate/tests/
+/simulate/*_AUDIT.md
