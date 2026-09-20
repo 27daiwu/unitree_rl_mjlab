@@ -7,7 +7,7 @@
 #include <vector>
 
 // G1 grid/frames/scale follow mjlab; collision semantics are explicitly selected.
-// Parity corrections are documented in ../HEIGHT_SCAN_AUDIT.md.
+// Historical parity audit reports are retained locally outside version control.
 struct HeightScan {
   enum class Mode { TRAINING_PARITY = 0, DEPLOYMENT_FILTERED = 1 };
   struct Hit { int geom = -1; double z = 0; };

@@ -13,11 +13,116 @@ from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
 
+from .stairs_metrics import geometry_tensors
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+class one_time_bilateral_upper_platform_acquisition:
+  """Reward the first bilateral upper-platform acquisition in an episode.
+
+  The event is terrain-relative and uses generated terrain metadata; it does
+  not depend on a fixed world-space riser location or a fixed riser height.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg
+    self.acquired = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    contact_sensor_name: str = "feet_ground_contact",
+    tolerance: float = 0.05,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    geometry = geometry_tensors(env)
+    feet = asset.data.site_pos_w[:, asset_cfg.site_ids] - env.scene.env_origins.unsqueeze(1)
+    inside = (
+      (feet[..., 0] + geometry["spawn_x"].unsqueeze(1)
+       >= geometry["staircase_end_x"].unsqueeze(1) + 0.03)
+      & (feet[..., 0] + geometry["spawn_x"].unsqueeze(1)
+         <= (geometry["staircase_end_x"] + geometry["top_platform_length"]).unsqueeze(1) - 0.03)
+      & ((feet[..., 2] - geometry["top_height"].unsqueeze(1)).abs() <= tolerance)
+    )
+    sensor: ContactSensor = env.scene[contact_sensor_name]
+    bilateral = (inside & (sensor.data.found[:, :2] > 0)).all(dim=1)
+    event = bilateral & ~self.acquired
+    self.acquired |= bilateral
+    return event.float()
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    self.acquired[env_ids if env_ids is not None else slice(None)] = False
+
+
+class one_time_valid_intermediate_support_acquisition:
+  """Reward one valid, ordered acquisition of a two-riser intermediate tread.
+
+  Geometry is resolved from the compiled terrain metadata for each environment.
+  The event is intentionally one-foot (step-through compatible) and latched per
+  environment; it is inactive for terrains without an intermediate tread.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg
+    self.acquired = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    self.r2_crossed = torch.zeros_like(self.acquired)
+    self.final_acquired = torch.zeros_like(self.acquired)
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    contact_sensor_name: str = "feet_ground_contact",
+    tolerance: float = 0.05,
+    footprint_margin: float = 0.03,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    try:
+      geometry = geometry_tensors(env)
+    except (RuntimeError, TypeError, AttributeError):
+      # Flat, mild, and single-riser terrains have no two-riser metadata.
+      return torch.zeros(env.num_envs, device=env.device)
+    feet = asset.data.site_pos_w[:, asset_cfg.site_ids] - env.scene.env_origins.unsqueeze(1)
+    patch_x = feet[..., 0] + geometry["spawn_x"].unsqueeze(1)
+    patch_y = feet[..., 1]
+    sensor: ContactSensor = env.scene[contact_sensor_name]
+    contact = sensor.data.found[:, : feet.shape[1]] > 0
+    # Two-riser metadata has num_steps=2; single-riser/flat terrain is inert.
+    has_intermediate = geometry["num_steps"] >= 2
+    r1 = geometry["staircase_start_x"].unsqueeze(1)
+    r2 = geometry["staircase_end_x"].unsqueeze(1)
+    inside = (
+      (patch_x >= r1 + footprint_margin)
+      & (patch_x <= r2 - footprint_margin)
+      & (patch_y >= geometry["corridor_inner_y_min"].unsqueeze(1) + footprint_margin)
+      & (patch_y <= geometry["corridor_inner_y_max"].unsqueeze(1) - footprint_margin)
+      & ((feet[..., 2] - geometry["step_height"].unsqueeze(1)).abs() <= tolerance)
+      & contact
+    )
+    root_x = asset.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0] + geometry["spawn_x"]
+    self.r2_crossed |= (root_x >= geometry["staircase_end_x"] + 0.15)
+    final_inside = (
+      (patch_x >= geometry["staircase_end_x"].unsqueeze(1) + 0.03)
+      & (patch_x <= (geometry["staircase_end_x"] + geometry["top_platform_length"]).unsqueeze(1) - 0.03)
+      & ((feet[..., 2] - geometry["top_height"].unsqueeze(1)).abs() <= tolerance)
+      & contact
+    )
+    self.final_acquired |= final_inside.all(dim=1)
+    event = has_intermediate & inside.any(dim=1) & ~self.r2_crossed & ~self.final_acquired & ~self.acquired
+    self.acquired |= event
+    return event.float()
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    idx = env_ids if env_ids is not None else slice(None)
+    self.acquired[idx] = False
+    self.r2_crossed[idx] = False
+    self.final_acquired[idx] = False
 
 
 def track_linear_velocity(
@@ -38,6 +143,62 @@ def track_linear_velocity(
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (2 * z_error)
   return torch.exp(-lin_vel_error / std**2)
+
+
+def command_direction_overspeed_squared(
+  command_xy: torch.Tensor,
+  actual_velocity_xy: torch.Tensor,
+  tolerance: float,
+  min_command_speed: float,
+) -> torch.Tensor:
+  """Return squared overspeed along the commanded planar direction."""
+  command_speed = torch.linalg.vector_norm(command_xy, dim=1)
+  active = command_speed >= min_command_speed
+  safe_speed = torch.where(active, command_speed, torch.ones_like(command_speed))
+  command_direction = command_xy / safe_speed.unsqueeze(1)
+  velocity_parallel = torch.sum(actual_velocity_xy * command_direction, dim=1)
+  overspeed = torch.clamp_min(velocity_parallel - command_speed - tolerance, 0.0)
+  return torch.where(active, torch.square(overspeed), torch.zeros_like(overspeed))
+
+
+def command_direction_overspeed_l2(
+  env: ManagerBasedRlEnv,
+  tolerance: float,
+  min_command_speed: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize only velocity exceeding speed along the planar command direction."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  return command_direction_overspeed_squared(
+    command[:, :2],
+    asset.data.root_link_lin_vel_b[:, :2],
+    tolerance=tolerance,
+    min_command_speed=min_command_speed,
+  )
+
+
+def command_direction_reverse_velocity_l2(
+  env: ManagerBasedRlEnv,
+  tolerance: float,
+  min_command_speed: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize only velocity moving opposite the commanded planar direction."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  command_xy = command[:, :2]
+  command_speed = torch.linalg.vector_norm(command_xy, dim=1)
+  active = command_speed >= min_command_speed
+  safe_speed = torch.where(active, command_speed, torch.ones_like(command_speed))
+  direction = command_xy / safe_speed.unsqueeze(1)
+  velocity_parallel = torch.sum(asset.data.root_link_lin_vel_b[:, :2] * direction, dim=1)
+  violation = torch.clamp_min(-(velocity_parallel + tolerance), 0.0)
+  return torch.where(active, torch.square(violation), torch.zeros_like(violation))
 
 
 def track_angular_velocity(
@@ -425,4 +586,3 @@ def stand_still(
             scale = (total_command <= command_threshold).float()
             reward *= scale
     return reward
-

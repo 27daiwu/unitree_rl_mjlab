@@ -107,7 +107,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     env = VideoRecorder(
       env,
       video_folder=Path(log_dir) / "videos" / "train",
-      step_trigger=lambda step: step % cfg.video_interval == 0,
+      # Avoid rendering at step 0: the initial viewer frame can block on the
+      # host DRM sync object when another play viewer is open.
+      step_trigger=lambda step: step > 0 and step % cfg.video_interval == 0,
       video_length=cfg.video_length,
       disable_logger=True,
     )
