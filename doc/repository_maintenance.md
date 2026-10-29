@@ -2,10 +2,11 @@
 
 正式训练与回放入口为 `scripts/train.py` 和 `scripts/play.py`。
 
-历史阶段试验任务默认不注册；确需复现时，在命令前加
-`UNITREE_ENABLE_LEGACY_TASKS=1`。保留通用任务、现有评估脚本使用的
-Phase2C0/C1/C2/C6/C7 和当前仿真关联的 Phase2C8G。旧配置之间仍有继承关系，
-因此保留其实现。`scripts/list_envs.py` 可查看实际可用任务。
+Phase2C0～Phase2C8J 历史实验任务及其专用配置、评估脚本、奖励和指标已移除，
+不再支持 `UNITREE_ENABLE_LEGACY_TASKS`。保留常规 Flat/Rough/Walk/Stairs/Tracking
+任务及楼梯基线、消融任务。`scripts/list_envs.py` 可查看实际可用任务。
+训练时必须指定任务，例如 `python scripts/train.py Unitree-G1-Flat`。
+历史 checkpoint、ONNX、训练参数和运行日志保留；复现已移除的实验需使用清理前的代码版本。
 
 一次性研究报告、评估 JSON 和脚本应放在仓库外；临时输出写入
 `doc/tmp/` 或 `logs/`，不要将运行结果与源码放在一起。
