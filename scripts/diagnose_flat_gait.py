@@ -23,6 +23,8 @@ class Config:
     output_dir: str = "logs/flat_w1_3_gait_diagnostics"
     checkpoint_a4: str = CHECKPOINTS["a4"]
     checkpoint_w1_3: str = CHECKPOINTS["w1_3"]
+    checkpoint_control: str | None = None
+    checkpoint_experiment: str | None = None
     task: str = "Unitree-G1-Flat"
     num_envs: int = 4
     seed: int = 42
@@ -263,18 +265,18 @@ def _capture(env):
         data.root_link_lin_vel_b[:, :2], data.root_link_ang_vel_b[:, 2:3],
         data.root_link_pos_w, data.root_link_quat_w,
     ), dim=1).detach().clone()
-    ids = [robot.site_names.index("left_foot"), robot.site_names.index("right_foot")]
+    site_ids = [robot.site_names.index("left_foot"), robot.site_names.index("right_foot")]
     sensor = env.scene["feet_ground_contact"].data
     effort_limits = np.zeros(robot.num_actuators, dtype=np.float32)
     for actuator in robot.actuators:
-        ids = actuator.ctrl_ids.detach().cpu().numpy().astype(int)
+        ctrl_ids = actuator.ctrl_ids.detach().cpu().numpy().astype(int)
         limit = actuator.cfg.effort_limit
         if limit is not None:
-            effort_limits[ids] = float(limit)
+            effort_limits[ctrl_ids] = float(limit)
     env.gait_diag = {
-        "site": robot.data.site_pos_w[:, ids].clone(),
-        "quat": robot.data.site_quat_w[:, ids].clone(),
-        "velocity": robot.data.site_lin_vel_w[:, ids, :].clone(),
+        "site": robot.data.site_pos_w[:, site_ids].clone(),
+        "quat": robot.data.site_quat_w[:, site_ids].clone(),
+        "velocity": robot.data.site_lin_vel_w[:, site_ids, :].clone(),
         "contact_time": sensor.current_contact_time.clone(),
         "air_time": sensor.current_air_time.clone(),
         "force": sensor.force.clone(),
@@ -306,8 +308,14 @@ def run(cfg):
     from evaluate_g1_navigation import snapshot, decode
 
     output = Path(cfg.output_dir)
+    if (output / "manifest.json").exists() or any(output.glob("*.npz")):
+        raise FileExistsError(f"Refusing to overwrite diagnostics: {output}")
     output.mkdir(parents=True, exist_ok=True)
-    checkpoints = {"a4": cfg.checkpoint_a4, "w1_3": cfg.checkpoint_w1_3}
+    checkpoints = ({"control": cfg.checkpoint_control, "experiment": cfg.checkpoint_experiment}
+                   if cfg.checkpoint_control and cfg.checkpoint_experiment else
+                   {"a4": cfg.checkpoint_a4, "w1_3": cfg.checkpoint_w1_3})
+    if bool(cfg.checkpoint_control) != bool(cfg.checkpoint_experiment):
+        raise ValueError("Both W1.4 checkpoints must be provided")
     geom = load_foot_collision_points("src/assets/robots/unitree_g1/xmls/g1.xml")
     manifest = {
         "config": asdict(cfg), "checkpoints": checkpoints, "commands": COMMANDS,
@@ -402,7 +410,7 @@ def run(cfg):
                     trials[(label, scenario, i)]["terminated_early"] = not bool(alive[i])
         finally:
             env.close()
-    comparison = aggregate(trials)
+    comparison = aggregate(trials, tuple(checkpoints))
     (output / "metrics.json").write_text(json.dumps({"trials": _json_trials(trials), "comparison": comparison}, indent=2, allow_nan=False) + "\n")
     (output / "summary.md").write_text(render_summary(comparison, manifest))
     print(json.dumps({"output_dir": str(output), "cases": comparison}, indent=2))
@@ -415,6 +423,8 @@ def analyze_saved(cfg):
     from mjlab.tasks.registry import load_env_cfg
 
     output = Path(cfg.output_dir)
+    manifest = json.loads((output / "manifest.json").read_text())
+    labels = tuple(manifest["checkpoints"])
     env_cfg = load_env_cfg(cfg.task)
     reward_names = tuple(env_cfg.rewards)
     robot_cfg = env_cfg.scene.entities["robot"]
@@ -440,7 +450,7 @@ def analyze_saved(cfg):
     if len(actuator_limits) != 29 or len(joint_names) != 29:
         raise RuntimeError("Could not map the 29 G1 joints/actuator effort limits from the registered Flat config")
     trials = {}
-    for label in ("a4", "w1_3"):
+    for label in labels:
         for scenario in SCENARIOS:
             for i in range(4):
                 path = output / f"{label}_{scenario}_{i}.npz"
@@ -454,7 +464,7 @@ def analyze_saved(cfg):
                 row["completed"] = len(trace["time"]) == 600
                 row["terminated_early"] = not row["completed"]
                 trials[(label, scenario, i)] = row
-    comparison = aggregate(trials)
+    comparison = aggregate(trials, labels)
     (output / "metrics.json").write_text(json.dumps({"trials": _json_trials(trials), "comparison": comparison}, indent=2, allow_nan=False) + "\n")
     manifest_path = output / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -463,14 +473,14 @@ def analyze_saved(cfg):
     return comparison
 
 
-def aggregate(trials):
+def aggregate(trials, labels=("a4", "w1_3")):
     out = {}
     for scenario in SCENARIOS:
         out[scenario] = {}
-        for label in ("a4", "w1_3"):
+        for label in labels:
             rows = [trials[(label, scenario, i)] for i in range(4)]
             out[scenario][label] = _aggregate_rows(rows)
-        out[scenario]["w1_3_minus_a4"] = _difference(out[scenario]["w1_3"], out[scenario]["a4"])
+        out[scenario][f"{labels[1]}_minus_{labels[0]}"] = _difference(out[scenario][labels[1]], out[scenario][labels[0]])
     return out
 
 
@@ -526,15 +536,15 @@ def _difference(new, old):
 
 def render_summary(comparison, manifest):
     lines = [
-        "# W1.3-D Flat Gait Diagnostics", "",
-        "A4 and W1.3 use Flat, seed 42, four replicas, seven pinned commands across six directions, and 600 policy steps. Per-trial data is in metrics.json.", "",
+        "# Flat Gait Diagnostics", "",
+        f"{' and '.join(manifest['checkpoints'])} use Flat, seed 42, four replicas, seven pinned commands across six directions, and 600 policy steps. Per-trial data is in metrics.json.", "",
         f"Contact sampling: {manifest['sensor_sampling']}.", "",
         "## Tracking and stability", "",
         "| Command | Policy | Command | Actual velocity | Velocity RMSE | Roll/pitch RMS (rad) | Base height (m) | Completed |",
         "|---|---|---|---|---|---|---:|---:|",
     ]
     for scenario, values in comparison.items():
-        for label in ("a4", "w1_3"):
+        for label in manifest["checkpoints"]:
             row = values[label]
             command = values[label].get("command_velocity")
             if command is None:
@@ -544,7 +554,7 @@ def render_summary(comparison, manifest):
               "| Command | Policy | DS fraction / total s | Mean DS bout s | Cycle Hz/foot | Step length L/R (m) | Swing excursion L/R (m) | Swing L/R (s) | Toe clearance L/R (m) | Heel clearance L/R (m) | Stance speed L/R (m/s) | Slip distance L/R (m) | Peak normal force L/R (N) | Swing contact candidates L/R | Effort limit peak / saturated fraction |"]
     lines += ["|---|---|---:|---:|---|---|---|---|---|---|---|---|---|---|---|"]
     for scenario, values in comparison.items():
-        for label in ("a4", "w1_3"):
+        for label in manifest["checkpoints"]:
             row = values[label]
             lengths = [row["feet"][f]["step_length_mean_m"] for f in FEET]
             excursions = [row["feet"][f]["swing_excursion_mean_m"] for f in FEET]

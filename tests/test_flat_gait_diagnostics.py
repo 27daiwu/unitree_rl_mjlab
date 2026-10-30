@@ -1,11 +1,38 @@
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from diagnose_flat_gait import contact_labels, load_foot_collision_points
+from diagnose_flat_gait import _capture, contact_labels, load_foot_collision_points
+
+
+class CaptureTests(unittest.TestCase):
+    def test_actuator_ids_do_not_replace_foot_site_ids(self):
+        data = SimpleNamespace(
+            root_link_lin_vel_b=torch.zeros(1, 3), root_link_ang_vel_b=torch.zeros(1, 3),
+            root_link_pos_w=torch.zeros(1, 3), root_link_quat_w=torch.zeros(1, 4),
+            site_pos_w=torch.arange(18).reshape(1, 6, 3),
+            site_quat_w=torch.zeros(1, 6, 4), site_lin_vel_w=torch.zeros(1, 6, 3),
+            joint_pos=torch.zeros(1, 29), joint_vel=torch.zeros(1, 29),
+            joint_acc=torch.zeros(1, 29), actuator_force=torch.zeros(1, 29),
+            soft_joint_pos_limits=torch.zeros(1, 29, 2),
+        )
+        sensor = SimpleNamespace(**{k: torch.zeros(1, 2) for k in (
+            "current_contact_time", "current_air_time", "force", "force_history")})
+        robot = SimpleNamespace(data=data, num_actuators=29,
+            site_names=("a", "left_foot", "b", "right_foot", "c", "d"),
+            actuators=[SimpleNamespace(ctrl_ids=torch.tensor([25, 26]),
+                                      cfg=SimpleNamespace(effort_limit=10.0))])
+        env = SimpleNamespace(scene={"robot": robot, "feet_ground_contact": SimpleNamespace(data=sensor)},
+            num_envs=1, device="cpu", action_manager=SimpleNamespace(action=torch.zeros(1, 29)),
+            reward_manager=SimpleNamespace(_step_reward=torch.zeros(1, 1), active_terms=("test",)))
+        _capture(env)
+        self.assertTrue(torch.equal(env.gait_diag["site"], data.site_pos_w[:, [1, 3]]))
+        self.assertEqual(env.gait_diag["actuator_limit"][0, 25].item(), 10.0)
 
 
 class ContactClassificationTests(unittest.TestCase):

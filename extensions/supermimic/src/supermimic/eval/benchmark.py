@@ -28,6 +28,8 @@ class ClipResult:
     failed: bool
     fail_step: int  # -1 if not failed
     terms: dict | None = None  # per-term mean reward per step (dt-scaled)
+    fail_reasons: list[str] | None = None  # root_height/root_tilt; None if clip completed
+    fail_time_s: float | None = None
 
 
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
@@ -98,6 +100,10 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
                             failed=bool(term[e]),
                             fail_step=st if bool(term[e]) else -1,
                             terms={n: float(term_sum[e, i]) / max(st, 1) for i, n in enumerate(term_names)},
+                            fail_reasons=[name for name in ("root_height", "root_tilt")
+                                          if bool(env.termination_manager.get_term(name)[e])]
+                            if bool(term[e]) else None,
+                            fail_time_s=st * env.step_dt if bool(term[e]) else None,
                         )
                         remaining -= 1
                         if verbose and (len(results) % 50 == 0 or len(results) == n_clips):

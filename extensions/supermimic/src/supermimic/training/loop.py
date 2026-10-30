@@ -101,6 +101,10 @@ class Trainer:
         self._utd_acc = 0.0
         if cfg.resume is not None:
             self.load(cfg.resume)
+        if cfg.schedule.stop_iteration is not None and not (
+            self.iteration < cfg.schedule.stop_iteration <= cfg.schedule.total_iterations
+        ):
+            raise ValueError("stop_iteration must be after the resumed iteration and within total_iterations")
 
     # ------------------------------------------------------------------ checkpoints
 
@@ -158,7 +162,7 @@ class Trainer:
         finished_lens: list[float] = []
         last_log = time.time()
 
-        while self.iteration < sch.total_iterations:
+        while self.iteration < (sch.stop_iteration or sch.total_iterations):
             # ---------------- (1) collect one vectorised env step
             t0 = time.perf_counter()
             action = self.act(obs)
@@ -269,6 +273,8 @@ class Trainer:
                         print("[INFO] max_hours reached, stopping")
                     break
         self.save("ckpt_latest.pt")
+        if sch.stop_iteration is not None and self.iteration == sch.stop_iteration:
+            self.save(f"ckpt_{self.iteration:07d}.pt")
         if self.writer is not None:
             self.writer.flush()
         finalize()

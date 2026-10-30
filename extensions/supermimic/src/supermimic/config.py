@@ -38,6 +38,7 @@ class EnvCfg:
 @dataclass
 class ScheduleCfg:
     total_iterations: int = 320_000  # env steps (plan D12 reading A)
+    stop_iteration: int | None = None  # optional stage boundary; does not change the LR schedule
     updates_per_env_step: float = 0.4  # UTD
     policy_updates_per_wm_update: int = 1
     warmup_iterations: int = 40  # env steps before the first update (fills k-step windows)
