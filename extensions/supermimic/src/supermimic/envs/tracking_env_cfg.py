@@ -88,11 +88,15 @@ class SuperMimicEnvCfgArgs:
     root_height_threshold: float = 0.25
     root_tilt_threshold: float = 0.8
     joint_limit_weight: float = -2.0
+    action_rate_weight: float = -0.1
     bin_frames: int = 50
     compact_library: bool = False
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     extra_command_kwargs: dict = field(default_factory=dict)
+    reset_pose_range: dict | None = None
+    reset_velocity_range: dict | None = None
+    reset_joint_position_range: tuple[float, float] | None = None
 
 
 def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
@@ -144,6 +148,9 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     # ---------------------------------------------------------------- commands
     pose_range = {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.01, 0.01), "roll": (-0.1, 0.1), "pitch": (-0.1, 0.1), "yaw": (-0.2, 0.2)}
     vel_range = {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.2, 0.2), "roll": (-0.52, 0.52), "pitch": (-0.52, 0.52), "yaw": (-0.78, 0.78)}
+    effective_pose_range = pose_range if a.reset_pose_range is None else a.reset_pose_range
+    effective_vel_range = vel_range if a.reset_velocity_range is None else a.reset_velocity_range
+    effective_joint_range = (-0.1, 0.1) if a.reset_joint_position_range is None else a.reset_joint_position_range
     commands = {
         "motion": MultiClipMotionCommandCfg(
             npz_files=[str(f) for f in a.npz_files],
@@ -153,9 +160,9 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             entity_name="robot",
             future_frames=a.future_frames,
             bin_frames=a.bin_frames,
-            pose_range=pose_range if a.reset_noise else {},
-            velocity_range=vel_range if a.reset_noise else {},
-            joint_position_range=(-0.1, 0.1) if a.reset_noise else (0.0, 0.0),
+            pose_range=effective_pose_range if a.reset_noise else {},
+            velocity_range=effective_vel_range if a.reset_noise else {},
+            joint_position_range=effective_joint_range if a.reset_noise else (0.0, 0.0),
             sampling_mode=a.sampling_mode,  # type: ignore[arg-type]
             compact_library=a.compact_library,
             debug_vis=a.debug_vis,
@@ -211,7 +218,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
         "motion_body_ori": RewardTermCfg(func=track_mdp.motion_relative_body_orientation_error_exp, weight=1.0, params={"command_name": "motion", "std": 0.4}),
         "motion_body_lin_vel": RewardTermCfg(func=track_mdp.motion_global_body_linear_velocity_error_exp, weight=1.0, params={"command_name": "motion", "std": 1.0}),
         "motion_body_ang_vel": RewardTermCfg(func=track_mdp.motion_global_body_angular_velocity_error_exp, weight=1.0, params={"command_name": "motion", "std": 3.14}),
-        "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.1),
+        "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=a.action_rate_weight),
         "joint_limit": RewardTermCfg(func=base_mdp.joint_pos_limits, weight=a.joint_limit_weight, params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))}),
     }
 

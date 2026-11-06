@@ -39,6 +39,7 @@ def main(
     clips: list[str] | None = None,
     device: str = "cuda:0",
     out: Path | None = None,
+    terminal_out: Path | None = None,
 ) -> None:
     """Save summary JSON and a full-rate .npz sidecar (pre-step, excludes reset states).
 
@@ -51,6 +52,8 @@ def main(
     trace_path = out.with_suffix(".npz")
     if out.exists() or trace_path.exists():
         raise FileExistsError(f"refusing to overwrite diagnostic output: {out}")
+    if terminal_out is not None and (terminal_out.exists() or terminal_out.with_suffix(".npz").exists()):
+        raise FileExistsError(f"refusing to overwrite terminal capture: {terminal_out}")
     out.parent.mkdir(parents=True, exist_ok=True)
     files = [str(f) for f in discover_npz(npz_dir, names=clips)]
     if not files:
@@ -75,6 +78,34 @@ def main(
     try:
         cmd = env.command_manager.get_term("motion")
         lib = cmd.library
+        terminal_records: list[dict[str, object]] = []
+        if terminal_out is not None:
+            term_manager = env.termination_manager
+            original_compute = term_manager.compute
+
+            def capture_terminal() -> torch.Tensor:
+                result = original_compute()
+                if result.any():
+                    mask = result.nonzero(as_tuple=False).squeeze(-1)
+                    terminal_records.append({
+                        "step": env.episode_length_buf[mask].detach().cpu().numpy().copy(),
+                        "reference_root_pos_w": cmd.root_pos_w[mask].detach().cpu().numpy().copy(),
+                        "reference_root_quat_w": cmd.root_quat_w[mask].detach().cpu().numpy().copy(),
+                        "actual_pelvis_pos_w": cmd.robot_root_pos_w[mask].detach().cpu().numpy().copy(),
+                        "actual_pelvis_quat_w": cmd.robot_root_quat_w[mask].detach().cpu().numpy().copy(),
+                        "joint_pos": cmd.robot_joint_pos[mask].detach().cpu().numpy().copy(),
+                        "joint_vel": cmd.robot_joint_vel[mask].detach().cpu().numpy().copy(),
+                        "reference_joint_pos": cmd.joint_pos[mask].detach().cpu().numpy().copy(),
+                        "reference_joint_vel": cmd.joint_vel[mask].detach().cpu().numpy().copy(),
+                        "policy_action": env.action_manager.action[mask].detach().cpu().numpy().copy(),
+                        "termination_flags": {
+                            name: term_manager.get_term(name)[mask].detach().cpu().numpy().copy()
+                            for name in term_manager.active_terms
+                        },
+                    })
+                return result
+
+            term_manager.compute = capture_terminal
         cmd.forced_frame[:] = lib.clip_start[torch.arange(n, device=device)]
         obs, _ = env.reset()
         cmd.forced_frame[:] = -1
@@ -265,6 +296,30 @@ def main(
             clips=np.array([c.name for c in lib.clips]),
             dt=np.array(dt),
         )
+        if terminal_out is not None:
+            terminal_sidecar = terminal_out.with_suffix(".npz")
+            terminal_sidecar.parent.mkdir(parents=True, exist_ok=True)
+            if terminal_records:
+                rec = terminal_records[0]
+                np.savez_compressed(
+                    terminal_sidecar,
+                    **{k: v for k, v in rec.items() if k != "termination_flags"},
+                    **{f"term_{k}": v for k, v in rec["termination_flags"].items()},
+                )
+                terminal_out.write_text(json.dumps({
+                    "checkpoint": str(ckpt.resolve()),
+                    "seed": 0,
+                    "capture": "inside termination_manager.compute after term evaluation, before auto-reset",
+                    "step": int(rec["step"][0]),
+                    "time_s": float(rec["step"][0]) * dt,
+                    "termination_flags": {k: bool(v[0]) for k, v in rec["termination_flags"].items()},
+                    "reference_pelvis_z_m": float(rec["reference_root_pos_w"][0, 2]),
+                    "actual_pelvis_z_m": float(rec["actual_pelvis_pos_w"][0, 2]),
+                    "pelvis_height_error_m": float(abs(rec["reference_root_pos_w"][0, 2] - rec["actual_pelvis_pos_w"][0, 2])),
+                    "npz": str(terminal_sidecar),
+                }, indent=2))
+            else:
+                terminal_out.write_text(json.dumps({"capture": "none", "npz": None}, indent=2))
         Path(out).write_text(
             json.dumps(
                 {

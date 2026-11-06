@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import torch
 
@@ -8,7 +10,7 @@ from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import BuiltinSensor, ContactSensor
-from mjlab.utils.lab_api.math import quat_apply_inverse
+from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
@@ -26,6 +28,7 @@ def track_linear_velocity(
   std: float,
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  right_y_error_scale: float = 1.0,
 ) -> torch.Tensor:
   """Reward for tracking the commanded base linear velocity.
 
@@ -36,6 +39,11 @@ def track_linear_velocity(
   assert command is not None, f"Command '{command_name}' not found."
   actual = asset.data.root_link_lin_vel_b
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
+  if right_y_error_scale != 1.0:
+    if right_y_error_scale <= 0.0:
+      raise ValueError("Rightward y error scale must be positive")
+    right_y_error = torch.square(command[:, 1] - actual[:, 1])
+    xy_error = xy_error + (right_y_error_scale - 1.0) * right_y_error * (command[:, 1] < 0)
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (2 * z_error)
   return torch.exp(-lin_vel_error / std**2)
@@ -184,6 +192,83 @@ def feet_clearance(
       active = (total_command > command_threshold).float()
       cost = cost * active
   return cost
+
+
+class flat_toe_clearance:
+  """Penalize low toe collision-envelope height in the middle of planned swing."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    xml_path = Path(__file__).resolve().parents[3] / "assets/robots/unitree_g1/xmls/g1.xml"
+    root = ET.parse(xml_path).getroot()
+    default = root.find(".//default[@class='foot_capsule']/geom")
+    if default is None:
+      raise ValueError("G1 foot capsule radius is missing")
+    radius = float(default.attrib["size"].split()[0])
+    points = []
+    for side in ("left", "right"):
+      body = next((body for body in root.iter("body")
+                   if any(site.get("name") == f"{side}_foot" for site in body.findall("site"))), None)
+      if body is None:
+        raise ValueError(f"G1 {side} foot body is missing")
+      site = next(site for site in body.findall("site") if site.get("name") == f"{side}_foot")
+      site_pos = torch.tensor([float(x) for x in site.attrib["pos"].split()])
+      toe_points = []
+      for geom in body.findall("geom"):
+        if not geom.get("name", "").startswith(f"{side}_foot") or not geom.get("name", "").endswith("_collision"):
+          continue
+        endpoints = torch.tensor([float(x) for x in geom.attrib["fromto"].split()]).reshape(2, 3)
+        for endpoint in endpoints:
+          if endpoint[0] - site_pos[0] > 0.05:
+            toe_points.append(endpoint - site_pos)
+      if not toe_points:
+        raise ValueError(f"G1 {side} toe collision envelope is empty")
+      points.append(torch.stack(toe_points))
+    if points[0].shape != points[1].shape:
+      raise ValueError("G1 toe collision envelopes have different sizes")
+    self.points = torch.stack(points).to(env.device)
+    self.radius = radius
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    target_height: float,
+    period: float,
+    offset: list[float],
+    swing_phase_start: float,
+    swing_phase_end: float,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+    target_shape: str = "rectangle",
+  ) -> torch.Tensor:
+    if not (0.0 <= swing_phase_start < swing_phase_end <= 1.0):
+      raise ValueError("Invalid planned swing phase window")
+    if target_height <= 0.0:
+      raise ValueError("Toe target height must be positive")
+    if target_shape not in ("rectangle", "smooth"):
+      raise ValueError("Unknown toe target shape")
+    asset: Entity = env.scene[asset_cfg.name]
+    foot_pos = asset.data.site_pos_w[:, asset_cfg.site_ids]
+    foot_quat = asset.data.site_quat_w[:, asset_cfg.site_ids]
+    batch = foot_pos.shape[0]
+    local = self.points.to(dtype=foot_pos.dtype)
+    quat = foot_quat[:, :, None, :].expand(-1, -1, local.shape[1], -1)
+    rotated = quat_apply(quat, local[None].expand(batch, -1, -1, -1))
+    toe_height = (foot_pos[:, :, None, 2] + rotated[..., 2]).min(dim=2).values - self.radius
+
+    phase = (env.episode_length_buf[:, None] * env.step_dt / period +
+             torch.as_tensor(offset, device=env.device, dtype=foot_pos.dtype)[None]) % 1.0
+    planned_swing = (phase > swing_phase_start + 1e-6) & (phase < swing_phase_end - 1e-6)
+    target = target_height
+    if target_shape == "smooth":
+      progress = ((phase - swing_phase_start) / (swing_phase_end - swing_phase_start)).clamp(0.0, 1.0)
+      target = target_height * torch.sin(torch.pi * progress).square()
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    moving = (torch.linalg.norm(command[:, :2], dim=1) + command[:, 2].abs()) > command_threshold
+    deficit = torch.clamp(target - toe_height, min=0.0)
+    # Match the old term's W1.3 backward/lateral reward-rate scale.
+    return 4.0 * (deficit * planned_swing * moving[:, None]).sum(dim=1)
 
 
 def feet_gait(

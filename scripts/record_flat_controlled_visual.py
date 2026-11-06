@@ -23,6 +23,7 @@ SCENARIOS = {
   'forward': 'forward_020', 'backward': 'backward_015',
   'left': 'left_020', 'right': 'right_020',
   'turn_left': 'turn_left_050', 'turn_right': 'turn_right_050',
+  'forward_fast': 'forward_040',
 }
 
 
@@ -40,20 +41,26 @@ class Config:
   steps: int = 600
   scenario: str = 'all'
   checkpoint: str = 'all'
+  checkpoint_control: str | None = None
+  checkpoint_experiment: str | None = None
 
 
 def run(cfg: Config):
   import src.tasks  # noqa: F401
+  if bool(cfg.checkpoint_control) != bool(cfg.checkpoint_experiment):
+    raise ValueError('Both matched checkpoint paths are required')
+  checkpoints = ({'control': cfg.checkpoint_control, 'experiment': cfg.checkpoint_experiment}
+                 if cfg.checkpoint_control else CHECKPOINTS)
   if cfg.scenario != 'all' and cfg.scenario not in SCENARIOS:
     raise ValueError(f'Unknown scenario: {cfg.scenario}')
-  if cfg.checkpoint != 'all' and cfg.checkpoint not in CHECKPOINTS:
+  if cfg.checkpoint != 'all' and cfg.checkpoint not in checkpoints:
     raise ValueError(f'Unknown checkpoint: {cfg.checkpoint}')
   if not 1 <= cfg.steps <= 600:
     raise ValueError('steps must be 1..600')
   output = Path(cfg.output_dir)
   output.mkdir(parents=True, exist_ok=True)
   records = []
-  for label, checkpoint in CHECKPOINTS.items():
+  for label, checkpoint in checkpoints.items():
     if cfg.checkpoint not in ('all', label):
       continue
     env_cfg = load_env_cfg('Unitree-G1-Flat')

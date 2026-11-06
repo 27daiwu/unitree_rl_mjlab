@@ -30,6 +30,9 @@ class ClipResult:
     terms: dict | None = None  # per-term mean reward per step (dt-scaled)
     fail_reasons: list[str] | None = None  # root_height/root_tilt; None if clip completed
     fail_time_s: float | None = None
+    completed_fraction: float = 0.0
+    full_frame_return: float | None = None
+    action_delta_rms: float = 0.0
 
 
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
@@ -77,10 +80,18 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
         steps = torch.zeros(num_envs, dtype=torch.long, device=device)
         term_names = list(env.reward_manager.active_terms)
         term_sum = torch.zeros(num_envs, len(term_names), device=device)
+        action_delta_sq_sum = torch.zeros(num_envs, device=device)
+        action_delta_count = torch.zeros(num_envs, device=device)
+        previous_action = None
         results: dict[int, ClipResult] = {}
         remaining = n_clips
         while remaining > 0:
             act = policy(obs["policy"], obs["goal"])
+            if previous_action is None:
+                previous_action = torch.zeros_like(act)
+            action_delta_sq_sum += (act - previous_action).square().mean(-1)
+            action_delta_count += 1
+            previous_action.copy_(act)
             obs, rew, term, tout, _ = env.step(act)
             ret_sum += rew
             term_sum += env.reward_manager.term_rewards
@@ -104,6 +115,11 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
                                           if bool(env.termination_manager.get_term(name)[e])]
                             if bool(term[e]) else None,
                             fail_time_s=st * env.step_dt if bool(term[e]) else None,
+                            completed_fraction=min(st / max(lib.clips[ci].length, 1), 1.0),
+                            full_frame_return=(float(ret_sum[e]) if not bool(term[e]) and st >= lib.clips[ci].length else None),
+                            action_delta_rms=float(
+                                (action_delta_sq_sum[e] / action_delta_count[e].clamp(min=1)).sqrt()
+                            ),
                         )
                         remaining -= 1
                         if verbose and (len(results) % 50 == 0 or len(results) == n_clips):
@@ -117,6 +133,9 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
                 ret_sum[ids] = 0.0
                 term_sum[ids] = 0.0
                 steps[ids] = 0
+                action_delta_sq_sum[ids] = 0.0
+                action_delta_count[ids] = 0.0
+                previous_action[ids] = 0.0
         return [results[i] for i in range(n_clips)]
     finally:
         env.close()
@@ -130,6 +149,14 @@ def summarize(results: list[ClipResult]) -> dict:
     tot_steps = sum(r.steps for r in results)
     w_ret = sum(r.norm_return * r.steps for r in results) / max(tot_steps, 1)
     out = {"clips": n, "failed": failed, "mean_norm_return": mean_ret, "step_weighted_norm_return": w_ret}
+    out["complete_count"] = sum(r.completed_fraction >= 1.0 and not r.failed for r in results)
+    out["completion_rate"] = out["complete_count"] / max(n, 1)
+    out["mean_completed_fraction"] = sum(r.completed_fraction for r in results) / max(n, 1)
+    complete = [r for r in results if r.full_frame_return is not None]
+    out["mean_full_frame_return"] = (
+        sum(r.full_frame_return for r in complete) / len(complete) if complete else None
+    )
+    out["mean_action_delta_rms"] = sum(r.action_delta_rms for r in results) / max(n, 1)
     if results and results[0].terms:
         out["terms"] = {k: sum(r.terms[k] * r.steps for r in results) / max(tot_steps, 1) for k in results[0].terms}
     return out

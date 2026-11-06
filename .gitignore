@@ -17,6 +17,7 @@ build/
 wandb/
 .vscode/
 doc
+docs
 artifacts/tmp/
 __pycache__/
 *.py[cod]
@@ -25,7 +26,7 @@ scripts/archive
 # Local simulation tests, audit scripts/results, and historical audit reports.
 /simulate/tests/
 /simulate/*_AUDIT.md
-
+tests
 
 extensions/supermimic/docs
 extensions/supermimic/data

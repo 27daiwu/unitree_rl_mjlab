@@ -31,10 +31,11 @@ def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
 
 
 class WorldModelTrainer:
-    def __init__(self, wm: WorldModel, lib: MotionLibrary, cfg: WMTrainerCfg):
+    def __init__(self, wm: WorldModel, lib: MotionLibrary, cfg: WMTrainerCfg, finite_check=None):
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
+        self.finite_check = finite_check
         self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         wm.enable_compile(cfg.compile)
 
@@ -54,11 +55,16 @@ class WorldModelTrainer:
         for _ in range(self.cfg.batches_per_update):
             w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
             loss, m = self.loss_on(w)
+            batch = {name: getattr(w, name) for name in ("states", "a_exec", "xi", "done", "frame")}
+            if self.finite_check: self.finite_check("world_model", "loss", {"loss": loss, **m}, batch)
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
             allreduce_grads(self.wm)
+            if self.finite_check: self.finite_check("world_model", "gradient", {n: p.grad for n, p in self.wm.named_parameters() if p.grad is not None}, batch)
             gn = torch.nn.utils.clip_grad_norm_(self.wm.parameters(), self.cfg.grad_clip)
+            if self.finite_check: self.finite_check("world_model", "clipped_gradient_norm", {"grad_norm": gn}, batch)
             self.opt.step()
+            if self.finite_check: self.finite_check("world_model", "parameter_after_step", {n: p for n, p in self.wm.named_parameters()}, batch)
             m["loss"] = loss.detach()
             m["grad_norm"] = gn.detach()
             for k, v in m.items():

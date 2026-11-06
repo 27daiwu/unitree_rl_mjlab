@@ -59,6 +59,23 @@ class ReplayBuffer:
         self.total_rows = 0
         self._env_ar = torch.arange(E, device=self.device)
 
+    def state_dict(self) -> dict:
+        names = ("s", "a", "a_exec", "xi", "r", "done", "frame", "clip", "ep_id", "terminal", "ep_start", "valid", "ptr", "ep_counter")
+        return {"format_version": 1, "shape": (self.E, self.T), "tensors": {n: getattr(self, n).detach().cpu().clone() for n in names}, "total_rows": self.total_rows}
+
+    def load_state_dict(self, state: dict) -> None:
+        if state.get("format_version") != 1 or tuple(state.get("shape", ())) != (self.E, self.T):
+            raise ValueError("replay-buffer checkpoint format or shape mismatch")
+        expected = {"s", "a", "a_exec", "xi", "r", "done", "frame", "clip", "ep_id", "terminal", "ep_start", "valid", "ptr", "ep_counter"}
+        if set(state["tensors"]) != expected:
+            raise ValueError("replay-buffer checkpoint tensor set mismatch")
+        for name, value in state["tensors"].items():
+            target = getattr(self, name)
+            if value.shape != target.shape or value.dtype != target.dtype:
+                raise ValueError(f"replay-buffer tensor mismatch: {name}")
+            target.copy_(value.to(device=self.device))
+        self.total_rows = int(state["total_rows"])
+
     # ------------------------------------------------------------------ writes
 
     @torch.no_grad()

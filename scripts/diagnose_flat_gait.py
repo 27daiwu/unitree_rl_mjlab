@@ -31,6 +31,7 @@ class Config:
     steps: int = 600
     device: str = "cuda:0"
     analyze_only: bool = False
+    native_actor_only_load: bool = False
 
 
 def contact_labels(contact, force_z, time, threshold_n=5.0, clearance=None, foot_vz=None):
@@ -345,7 +346,20 @@ def run(cfg):
             rl = load_rl_cfg(cfg.task)
             vec = RslRlVecEnvWrapper(env, clip_actions=rl.clip_actions)
             runner = load_runner_cls(cfg.task)(vec, asdict(rl), device=cfg.device)
-            runner.load(checkpoint, load_cfg={"actor": True}, strict=True, map_location=cfg.device)
+            if cfg.native_actor_only_load:
+                # Hand-saved intermediate policies may omit optional runner infos.
+                # Fixed-command evaluation needs only the actor, including its normalizer.
+                loaded = torch.load(checkpoint, map_location=cfg.device, weights_only=False)
+                runner.alg.load(loaded, {"actor": True}, strict=True)
+                actor = getattr(runner.alg, "_raw_actor", runner.alg.actor)
+                actual_state = actor.state_dict()
+                if actual_state.keys() != loaded["actor_state_dict"].keys() or any(
+                    not torch.equal(actual_state[key], value)
+                    for key, value in loaded["actor_state_dict"].items()
+                ):
+                    raise RuntimeError("Evaluation actor/normalizer differs from checkpoint")
+            else:
+                runner.load(checkpoint, load_cfg={"actor": True}, strict=True, map_location=cfg.device)
             policy = runner.get_inference_policy(device=cfg.device)
             for scenario, command in COMMANDS.items():
                 env.reset(seed=cfg.seed)
@@ -565,7 +579,9 @@ def render_summary(comparison, manifest):
             slide = [row["feet"][f]["stance_foot_sliding_distance_m"] for f in FEET]
             events = [row["feet"][f]["swing_contact_event_count"] for f in FEET]
             limits = [row["actuator_effort_limit_fraction_peak"], row["actuator_effort_saturation_sample_fraction"]]
-            lines.append(f"| {scenario} | {label} | {row['double_support_fraction']:.3f} / {row['double_support_duration_total_s']:.3f} | {row['double_support_bout_duration_mean_s']:.3f} | {row['step_frequency_hz']:.2f} | {lengths} | {excursions} | {swings} | {toes} | {heels} | {stance_speed} | {slide} | {row['normal_contact_force_peak_n']} | {events} | {limits} |")
+            ds_bout = row["double_support_bout_duration_mean_s"]
+            ds_bout_text = f"{ds_bout:.3f}" if ds_bout is not None else "n/a"
+            lines.append(f"| {scenario} | {label} | {row['double_support_fraction']:.3f} / {row['double_support_duration_total_s']:.3f} | {ds_bout_text} | {row['step_frequency_hz']:.2f} | {lengths} | {excursions} | {swings} | {toes} | {heels} | {stance_speed} | {slide} | {row['normal_contact_force_peak_n']} | {events} | {limits} |")
     lines += [
         "", "## Interpretation limits", "",
         "Foot-site height is not toe clearance. Toe and heel collision-envelope heights use the MJCF capsule endpoints and radius. Contact uses measured normal force and contact timing, not foot height. Sensor history samples 5 ms physics substeps and stores four samples per 20 ms policy step. Reward terms are read from the normal reward-manager update; reward functions are not called a second time. The six-direction set includes two forward speed commands.", "",

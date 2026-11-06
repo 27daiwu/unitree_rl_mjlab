@@ -38,8 +38,9 @@ class PolicyTrainerCfg:
 
 
 class PolicyTrainer:
-    def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
+    def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg, finite_check=None):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
+        self.finite_check = finite_check
         self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas)
         self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
         from supermimic.imagination.compiled import ImagStep
@@ -60,6 +61,7 @@ class PolicyTrainer:
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
         cfg = self.cfg
         start = buffer.sample_starts(cfg.batch_size, cfg.history)
+        batch = {name: getattr(start, name) for name in ("state", "xi", "frame", "prev_action", "hist_states", "hist_actions")}
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------
@@ -73,12 +75,16 @@ class PolicyTrainer:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
         loss = -J / cfg.horizon
+        if self.finite_check: self.finite_check("policy", "loss", {"loss": loss, "objective": J}, batch)
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
+        if self.finite_check: self.finite_check("policy", "gradient", {n: p.grad for n, p in self.policy.named_parameters() if p.grad is not None}, batch)
         gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
+        if self.finite_check: self.finite_check("policy", "clipped_gradient_norm", {"grad_norm": gn}, batch)
         torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
         self.opt.step()
+        if self.finite_check: self.finite_check("policy", "parameter_after_step", {n: p for n, p in self.policy.named_parameters()}, batch)
         self.wm.requires_grad_(True)
         self.critic.requires_grad_(True)
 
@@ -116,11 +122,15 @@ class PolicyTrainer:
                     idx = perm[i * mb : (i + 1) * mb]
                     pred = self.critic(X_feat[idx], X_goal[idx], X_xi[idx], X_er[idx])
                     closs = torch.nn.functional.mse_loss(pred, Y[idx])
+                    if self.finite_check: self.finite_check("critic", "loss", {"loss": closs}, batch)
                     self.critic_opt.zero_grad(set_to_none=True)
                     closs.backward()
                     allreduce_grads(self.critic)
-                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
+                    if self.finite_check: self.finite_check("critic", "gradient", {n: p.grad for n, p in self.critic.named_parameters() if p.grad is not None}, batch)
+                    cgn = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
+                    if self.finite_check: self.finite_check("critic", "clipped_gradient_norm", {"grad_norm": cgn}, batch)
                     self.critic_opt.step()
+                    if self.finite_check: self.finite_check("critic", "parameter_after_step", {n: p for n, p in self.critic.named_parameters()}, batch)
                     last = closs.detach()
             metrics["critic_loss"] = float(last)
             metrics["critic_value_mean"] = float(values.mean())

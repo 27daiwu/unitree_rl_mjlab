@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import random
 import time
 from dataclasses import asdict
 from pathlib import Path
+
+import numpy as np
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -14,11 +18,13 @@ from supermimic.config import TrainConfig
 from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.mdp.motion_library import discover_npz
+from supermimic.envs.mdp.rewards import TrackingRewardCfg
 from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
+from supermimic.training.env_snapshot import capture_env, restore_env
 from supermimic.training.schedule import cosine_lr
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
@@ -26,6 +32,7 @@ from supermimic.world_model.world_model import WorldModel
 
 
 class Trainer:
+    CHECKPOINT_FORMAT_VERSION = 2
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
@@ -67,6 +74,10 @@ class Trainer:
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
                 anchor_obs=cfg.env.anchor_obs,
+                action_rate_weight=cfg.env.action_rate_weight,
+                reset_pose_range=cfg.env.reset_pose_range,
+                reset_velocity_range=cfg.env.reset_velocity_range,
+                reset_joint_position_range=cfg.env.reset_joint_position_range,
                 seed=cfg.seed + 1000 * self.rank,
             ),
             device=self.device,
@@ -79,14 +90,18 @@ class Trainer:
         robot = env.scene["robot"]
 
         fk = G1Kinematics(load_g1_model(), device=self.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(
+            fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY,
+            robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone(),
+            reward_cfg=TrackingRewardCfg(w_action_rate=cfg.env.action_rate_weight),
+        )
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
         for m in (self.wm, self.policy, self.critic):
             broadcast_params(m)
-        self.wm_trainer = WorldModelTrainer(self.wm, self.lib, cfg.wm_trainer)
-        self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, self.lib, cfg.policy_trainer)
+        self.wm_trainer = WorldModelTrainer(self.wm, self.lib, cfg.wm_trainer, finite_check=self._finite_check)
+        self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, self.lib, cfg.policy_trainer, finite_check=self._finite_check)
         n_params = lambda m: sum(p.numel() for p in m.parameters())  # noqa: E731
         if self.is_main:
             print(f"[INFO] params: world model {n_params(self.wm)/1e6:.2f}M, policy {n_params(self.policy)/1e6:.2f}M, critic {n_params(self.critic)/1e6:.3f}M")
@@ -99,6 +114,7 @@ class Trainer:
         self.start_iteration = 0  # warm-up (buffer refill) counts from here, also after a resume
         self.num_updates = 0
         self._utd_acc = 0.0
+        self.resume_complete = False
         if cfg.resume is not None:
             self.load(cfg.resume)
         if cfg.schedule.stop_iteration is not None and not (
@@ -111,8 +127,11 @@ class Trainer:
     def save(self, name: str = "ckpt_latest.pt") -> None:
         if not self.is_main:
             return
-        torch.save(
-            {
+        for label, module in (("world_model", self.wm), ("policy", self.policy), ("critic", self.critic)):
+            if not all(torch.isfinite(p).all().item() for p in module.parameters()):
+                raise FloatingPointError(f"refusing checkpoint with non-finite {label} parameters")
+        payload = {
+                "format_version": self.CHECKPOINT_FORMAT_VERSION,
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
@@ -124,12 +143,53 @@ class Trainer:
                 "bin_return": self.command.bin_return,
                 "bin_memory": self.command.bin_memory,
                 "config": asdict(self.cfg),
-            },
-            self.log_dir / name,
-        )
+                "schedule_state": {"utd_acc": self._utd_acc, "start_iteration": self.start_iteration, "ep_reward_sum": self.ep_reward_sum.detach().cpu(), "ep_len": self.ep_len.detach().cpu()},
+                "replay_buffer": self.buffer.state_dict(),
+                "recorder": self.recorder.state_dict(),
+                "environment": capture_env(self.env),
+                "rng_state": self._rng_state(),
+                "optimizer_lrs": {"wm": [g["lr"] for g in self.wm_trainer.opt.param_groups], "policy": [g["lr"] for g in self.policy_trainer.opt.param_groups], "critic": [g["lr"] for g in self.policy_trainer.critic_opt.param_groups]},
+            }
+        path = self.log_dir / name
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _rng_state() -> dict:
+        return {"python": random.getstate(), "numpy": np.random.get_state(), "torch_cpu": torch.get_rng_state(), "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []}
+
+    @staticmethod
+    def _restore_rng_state(state: dict) -> None:
+        random.setstate(state["python"])
+        np.random.set_state(state["numpy"])
+        torch.set_rng_state(state["torch_cpu"])
+        if state.get("torch_cuda") and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(state["torch_cuda"])
+
+    def _finite_check(self, name: str, stage: str, values: dict, batch=None) -> None:
+        for key, value in values.items():
+            if torch.is_tensor(value):
+                finite = torch.isfinite(value).all().item()
+            elif isinstance(value, (float, int)):
+                finite = np.isfinite(value)
+            else:
+                continue
+            if not finite:
+                if self.is_main:
+                    diagnostic = {"format_version": 1, "iteration": self.iteration, "num_updates": self.num_updates, "optimizer": name, "stage": stage, "first_nonfinite": key, "values": {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in values.items()}, "batch": {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in (batch or {}).items()}, "state_at_detection": {"wm": self.wm.state_dict(), "policy": self.policy.state_dict(), "critic": self.critic.state_dict(), "wm_opt": self.wm_trainer.opt.state_dict(), "policy_opt": self.policy_trainer.opt.state_dict(), "critic_opt": self.policy_trainer.critic_opt.state_dict()}, "last_periodic_checkpoint": str(self.log_dir / "ckpt_latest.pt")}
+                    path = self.log_dir / "failure_first_nonfinite.pt"
+                    with path.open("xb") as out:
+                        torch.save(diagnostic, out)
+                raise FloatingPointError(f"non-finite {name} {stage}: {key} at iteration {self.iteration}")
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        version = ck.get("format_version", 1)
+        if version > self.CHECKPOINT_FORMAT_VERSION:
+            raise RuntimeError(f"unsupported checkpoint format version {version}")
+        if version < self.CHECKPOINT_FORMAT_VERSION and self.cfg.require_full_resume:
+            raise RuntimeError("legacy checkpoint lacks replay buffer, RNG, schedule and environment state; full resume refused")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
@@ -141,6 +201,22 @@ class Trainer:
         self.iteration = ck["iteration"]
         self.start_iteration = self.iteration
         self.num_updates = ck["num_updates"]
+        if version < self.CHECKPOINT_FORMAT_VERSION:
+            print("[WARN] legacy checkpoint loaded for weights/optimizer only; full training-state resume is unavailable", flush=True)
+            self.resume_complete = False
+        else:
+            self.buffer.load_state_dict(ck["replay_buffer"])
+            self.recorder.load_state_dict(ck["recorder"])
+            self._utd_acc = float(ck["schedule_state"]["utd_acc"])
+            self.start_iteration = int(ck["schedule_state"]["start_iteration"])
+            self.ep_reward_sum.copy_(ck["schedule_state"]["ep_reward_sum"].to(self.device))
+            self.ep_len.copy_(ck["schedule_state"]["ep_len"].to(self.device))
+            for opt, lrs in ((self.wm_trainer.opt, ck["optimizer_lrs"]["wm"]), (self.policy_trainer.opt, ck["optimizer_lrs"]["policy"]), (self.policy_trainer.critic_opt, ck["optimizer_lrs"]["critic"])):
+                if len(opt.param_groups) != len(lrs): raise ValueError("checkpoint optimizer LR group mismatch")
+                for group, lr in zip(opt.param_groups, lrs): group["lr"] = lr
+            restore_env(self.env, ck["environment"])
+            self._restore_rng_state(ck["rng_state"])
+            self.resume_complete = True
         print(f"[INFO] resumed from {path} at iteration {self.iteration}")
 
     # ------------------------------------------------------------------ main loop
@@ -153,7 +229,10 @@ class Trainer:
         cfg = self.cfg
         sch = cfg.schedule
         env = self.env
-        obs, _ = env.reset()
+        if self.resume_complete:
+            obs = env.get_observations()
+        else:
+            obs, _ = env.reset()
         t_start = time.time()
         timers = {"sim": 0.0, "wm": 0.0, "policy": 0.0}
         agg: dict[str, float] = {}
@@ -197,6 +276,7 @@ class Trainer:
                     t0 = time.perf_counter()
                     for _ in range(sch.policy_updates_per_wm_update):
                         m_pi = self.policy_trainer.update(self.buffer)
+                    self._finite_check("metrics", "post-update", {**{f"wm/{k}": v for k, v in m_wm.items()}, **{f"policy/{k}": v for k, v in m_pi.items()}})
                     torch.cuda.synchronize()
                     timers["policy"] += time.perf_counter() - t0
                     self.num_updates += 1

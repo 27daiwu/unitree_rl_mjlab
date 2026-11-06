@@ -33,6 +33,11 @@ class EnvCfg:
     future_frames: int = 10
     compact_library: bool = False
     anchor_obs: bool = False
+    action_rate_weight: float = -0.1
+    # Optional explicit reset ranges. None preserves the historical reset_noise ranges.
+    reset_pose_range: dict | None = None
+    reset_velocity_range: dict | None = None
+    reset_joint_position_range: tuple[float, float] | None = None
 
 
 @dataclass
@@ -64,3 +69,4 @@ class TrainConfig:
     policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
     resume: Path | None = None
+    require_full_resume: bool = False

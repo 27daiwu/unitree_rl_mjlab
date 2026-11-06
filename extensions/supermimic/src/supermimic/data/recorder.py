@@ -43,6 +43,16 @@ class ReplayRecorder(RecorderTerm):
         self.ep_start = torch.ones(n, dtype=torch.bool, device=env.device)
         self.enabled = True
 
+    def state_dict(self) -> dict:
+        return {"prev_s": self.prev_s.detach().cpu().clone(), "prev_xi": self.prev_xi.detach().cpu().clone(), "prev_frame": self.prev_frame.detach().cpu().clone(), "prev_clip": self.prev_clip.detach().cpu().clone(), "ep_start": self.ep_start.detach().cpu().clone()}
+
+    def load_state_dict(self, state: dict) -> None:
+        for name in ("prev_s", "prev_xi", "prev_frame", "prev_clip", "ep_start"):
+            target, value = getattr(self, name), state[name]
+            if target.shape != value.shape or target.dtype != value.dtype:
+                raise ValueError(f"recorder state mismatch: {name}")
+            target.copy_(value.to(device=target.device))
+
     # lazy handles (managers are built after the recorder in load_managers order? no: recorder is last)
     @property
     def command(self):
