@@ -26,6 +26,13 @@ python scripts/npz_player_cropper_gui.py \
 注意：默认使用 np.savez 保存未压缩 NPZ，避免生成 compress_type=8，导致 MJLab C++/cnpy 读取失败。
 如确实需要压缩体积，可显式添加 --compressed-output。
 
+video2robot / MJLab 导出的 joint_pos + body_pos_w + body_quat_w 格式可自动识别：
+    python scripts/npz_player_cropper_gui.py \
+        --input ~/motion_datasets/gdw.npz \
+        --model-xml src/assets/robots/unitree_g1/xmls/g1.xml
+默认读取 NPZ 的 fps（可能不同于原始 CSV 的 input_fps），使用第 0 个刚体作为根节点。
+可用 --root-body-index 选择其他刚体；存在 joint_names 时自动按名称映射关节。
+
 如果 NPZ 字段无法自动识别，可手动指定：
     python npz_player_cropper_gui.py \
         --input motion.npz \
@@ -95,6 +102,7 @@ ROOT_POS_KEY_CANDIDATES = (
     "base_position",
     "root_trans",
     "trans",
+    "body_pos_w",
 )
 
 ROOT_QUAT_KEY_CANDIDATES = (
@@ -103,6 +111,7 @@ ROOT_QUAT_KEY_CANDIDATES = (
     "base_quat",
     "base_quaternion",
     "root_rot",
+    "body_quat_w",
 )
 
 FPS_KEY_CANDIDATES = (
@@ -138,6 +147,8 @@ ROOT_ANG_VEL_KEYS = (
     "root_angular_velocity",
     "base_ang_vel",
 )
+
+METADATA_KEYS = {"joint_names", "body_names", "source", "input_fps", *FPS_KEY_CANDIDATES}
 
 
 def first_existing(data: dict[str, np.ndarray], names: tuple[str, ...]) -> str | None:
@@ -225,6 +236,10 @@ class MotionData:
                 "无法识别关节位置字段。请使用 --joint-key 指定。\n"
                 f"现有字段：{list(self.data.keys())}"
             )
+        if self.joint_key not in self.data:
+            raise ValueError(
+                f"关节字段 {self.joint_key!r} 不存在。现有字段：{list(self.data)}"
+            )
 
         self.joint_pos = np.asarray(self.data[self.joint_key])
         if self.joint_pos.ndim != 2:
@@ -235,24 +250,20 @@ class MotionData:
 
         self.num_frames = int(self.joint_pos.shape[0])
         self.num_joints = int(self.joint_pos.shape[1])
+        if self.num_frames == 0:
+            raise ValueError("动作中没有帧")
 
-        self.root_pos_key = args.root_pos_key or first_existing(
-            self.data, ROOT_POS_KEY_CANDIDATES
+        self.root_body_index = args.root_body_index
+        self.quat_order = args.quat_order
+        self.root_pos_key = self._resolve_root_key(
+            args.root_pos_key, ROOT_POS_KEY_CANDIDATES, "body_pos_w"
         )
-        self.root_quat_key = args.root_quat_key or first_existing(
-            self.data, ROOT_QUAT_KEY_CANDIDATES
+        self.root_quat_key = self._resolve_root_key(
+            args.root_quat_key, ROOT_QUAT_KEY_CANDIDATES, "body_quat_w"
         )
 
-        self.root_pos = (
-            np.asarray(self.data[self.root_pos_key])
-            if self.root_pos_key is not None
-            else None
-        )
-        self.root_quat = (
-            np.asarray(self.data[self.root_quat_key])
-            if self.root_quat_key is not None
-            else None
-        )
+        self.root_pos = self._root_track(self.root_pos_key, 3)
+        self.root_quat = self._root_track(self.root_quat_key, 4)
 
         if self.root_pos is not None:
             if self.root_pos.ndim != 2 or self.root_pos.shape[1] < 3:
@@ -277,10 +288,46 @@ class MotionData:
         self.fps = self._detect_fps(args.fps)
         self.frame_dt = 1.0 / self.fps
 
+    def _resolve_root_key(
+        self, requested: str | None, candidates: tuple[str, ...], body_key: str
+    ) -> str | None:
+        if requested is None:
+            return first_existing(self.data, candidates)
+        if requested in self.data:
+            return requested
+        # 兼容此前显式传入 root_pos / root_quat 的命令。
+        if requested in candidates and body_key in self.data:
+            print(f"提示：字段 {requested!r} 不存在，改用 {body_key} 的根刚体轨迹。")
+            return body_key
+        raise ValueError(f"字段 {requested!r} 不存在。现有字段：{list(self.data)}")
+
+    def _root_track(self, key: str | None, width: int) -> np.ndarray | None:
+        if key is None:
+            return None
+        arr = np.asarray(self.data[key])
+        if arr.ndim == 3:
+            if arr.shape[0] != self.num_frames or arr.shape[2] != width:
+                raise ValueError(f"{key} 应为 (T, B, {width})，实际 {arr.shape}")
+            if not 0 <= self.root_body_index < arr.shape[1]:
+                raise ValueError(
+                    f"--root-body-index={self.root_body_index} 超出 {key} 的刚体范围 "
+                    f"[0, {arr.shape[1] - 1}]"
+                )
+            return arr[:, self.root_body_index, :]
+        return arr
+
     def _detect_fps(self, cli_fps: float | None) -> float:
         if cli_fps is not None:
             if cli_fps <= 0:
                 raise ValueError("--fps 必须大于 0")
+            fps_key = first_existing(self.data, FPS_KEY_CANDIDATES)
+            if fps_key is not None:
+                stored_fps = scalar_value(self.data[fps_key])
+                if not np.isclose(cli_fps, stored_fps):
+                    print(
+                        f"提示：--fps {cli_fps:g} 覆盖了 NPZ 帧率 {stored_fps:g}，"
+                        "播放速度和重算速度将使用指定帧率。"
+                    )
             return float(cli_fps)
 
         fps_key = first_existing(self.data, FPS_KEY_CANDIDATES)
@@ -311,6 +358,15 @@ class MotionData:
         print(f"关节字段   : {self.joint_key}")
         print(f"根位置字段 : {self.root_pos_key}")
         print(f"根姿态字段 : {self.root_quat_key}")
+        if any(
+            key is not None and self.data[key].ndim == 3
+            for key in (self.root_pos_key, self.root_quat_key)
+        ):
+            print(f"根刚体索引 : {self.root_body_index}")
+            if "body_names" in self.data:
+                names = np.asarray(self.data["body_names"]).reshape(-1)
+                if self.root_body_index < len(names):
+                    print(f"根刚体名称 : {names[self.root_body_index]}")
         print("\n全部字段：")
         for key, value in self.data.items():
             print(f"  {key:28s} shape={value.shape!s:18s} dtype={value.dtype}")
@@ -331,7 +387,11 @@ class MotionData:
         for key, value in self.data.items():
             arr = np.asarray(value)
 
-            if arr.ndim >= 1 and arr.shape[0] == self.num_frames:
+            if (
+                key not in METADATA_KEYS
+                and arr.ndim >= 1
+                and arr.shape[0] == self.num_frames
+            ):
                 output[key] = arr[start:end_exclusive].copy()
             else:
                 output[key] = arr.copy()
@@ -356,6 +416,8 @@ class MotionData:
 
         if self.root_pos_key and self.root_pos_key in output:
             root_pos = np.asarray(output[self.root_pos_key], dtype=np.float64)
+            if root_pos.ndim == 3:
+                root_pos = root_pos[:, self.root_body_index, :]
             if len(root_pos) >= 2:
                 root_lin_vel = np.gradient(root_pos[:, :3], dt, axis=0)
             else:
@@ -369,9 +431,12 @@ class MotionData:
 
         if self.root_quat_key and self.root_quat_key in output:
             quat = np.asarray(output[self.root_quat_key], dtype=np.float64)
+            if quat.ndim == 3:
+                quat = quat[:, self.root_body_index, :]
             if len(quat) > 0:
                 quat_wxyz = quat.copy()
-                # 内部重算函数统一使用 wxyz；是否转换由调用方保证。
+                if self.quat_order == "xyzw":
+                    quat_wxyz = quat_wxyz[:, [3, 0, 1, 2]]
                 ang_vel = np.zeros((len(quat_wxyz), 3), dtype=np.float64)
                 for i in range(1, len(quat_wxyz)):
                     ang_vel[i] = quat_delta_to_angular_velocity(
@@ -385,6 +450,34 @@ class MotionData:
                         output[key] = ang_vel.astype(
                             np.asarray(output[key]).dtype, copy=False
                         )
+
+        # MJLab/video2robot 保存的是所有刚体的世界坐标速度，同步重算。
+        if "body_pos_w" in output and "body_lin_vel_w" in output:
+            pos = np.asarray(output["body_pos_w"], dtype=np.float64)
+            old = np.asarray(output["body_lin_vel_w"])
+            if pos.ndim == 3 and pos.shape[2] == 3 and pos.shape == old.shape:
+                vel = np.gradient(pos, dt, axis=0) if len(pos) >= 2 else np.zeros_like(pos)
+                output["body_lin_vel_w"] = vel.astype(old.dtype, copy=False)
+
+        if "body_quat_w" in output and "body_ang_vel_w" in output:
+            quat = np.asarray(output["body_quat_w"], dtype=np.float64)
+            old = np.asarray(output["body_ang_vel_w"])
+            if (
+                quat.ndim == 3
+                and quat.shape[2] == 4
+                and old.shape == (*quat.shape[:2], 3)
+            ):
+                if self.quat_order == "xyzw":
+                    quat = quat[:, :, [3, 0, 1, 2]]
+                vel = np.zeros(old.shape, dtype=np.float64)
+                for i in range(1, len(quat)):
+                    for body in range(quat.shape[1]):
+                        vel[i, body] = quat_delta_to_angular_velocity(
+                            quat[i - 1, body], quat[i, body], dt
+                        )
+                if len(vel) >= 2:
+                    vel[0] = vel[1]
+                output["body_ang_vel_w"] = vel.astype(old.dtype, copy=False)
 
 
 class FloatingController:
@@ -640,13 +733,25 @@ class MotionPlayer:
         return None
 
     def _build_joint_qpos_mapping(self) -> list[int]:
+        names: list[str] | None = None
         if self.args.joint_names:
             names = [x.strip() for x in self.args.joint_names.split(",") if x.strip()]
+        elif "joint_names" in self.motion.data:
+            raw_names = np.asarray(self.motion.data["joint_names"]).reshape(-1)
+            names = [
+                x.decode("utf-8") if isinstance(x, bytes) else str(x)
+                for x in raw_names
+            ]
+            print("使用 NPZ joint_names 按名称映射模型关节。")
+
+        if names is not None:
             if len(names) != self.motion.num_joints:
                 raise ValueError(
-                    f"--joint-names 数量 {len(names)} 与 NPZ 关节数 "
+                    f"关节名称数量 {len(names)} 与 NPZ 关节数 "
                     f"{self.motion.num_joints} 不一致"
                 )
+            if len(set(names)) != len(names):
+                raise ValueError("关节名称中存在重复项")
 
             addresses: list[int] = []
             for name in names:
@@ -709,7 +814,7 @@ class MotionPlayer:
 
             if self.motion.root_quat is not None:
                 quat = self.motion.root_quat[self.frame, :4]
-                if self.args.quat_order == "xyzw":
+                if self.motion.quat_order == "xyzw":
                     quat = quat_xyzw_to_wxyz(quat)
                 qpos[adr + 3 : adr + 7] = normalize_quaternion_wxyz(quat)
 
@@ -877,6 +982,9 @@ class MotionPlayer:
             show_left_ui=True,
             show_right_ui=True,
         ) as viewer:
+            if self.free_joint_qpos_adr is not None:
+                adr = self.free_joint_qpos_adr
+                viewer.cam.lookat[:] = self.data.qpos[adr : adr + 3]
             while viewer.is_running() and not self.exit_requested:
                 if self.controller is not None:
                     self.controller.process_events()
@@ -935,8 +1043,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fps", type=float, default=None, help="手动指定帧率")
     parser.add_argument("--joint-key", default=None, help="关节位置字段名")
-    parser.add_argument("--root-pos-key", default=None, help="根节点位置字段名")
-    parser.add_argument("--root-quat-key", default=None, help="根节点四元数字段名")
+    parser.add_argument("--root-pos-key", default=None, help="根位置字段，自动识别 root_pos / body_pos_w")
+    parser.add_argument("--root-quat-key", default=None, help="根四元数字段，自动识别 root_quat / body_quat_w")
+    parser.add_argument(
+        "--root-body-index", type=int, default=0,
+        help="从 (T,B,3/4) 的刚体数组读取根轨迹时使用的刚体索引（默认第一个为 pelvis）",
+    )
 
     parser.add_argument(
         "--quat-order",
@@ -947,7 +1059,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--joint-names",
         default=None,
-        help="按 NPZ 列顺序指定模型关节名，使用逗号分隔",
+        help="按 NPZ 列顺序指定模型关节名，使用逗号分隔；默认优先读取 NPZ joint_names",
     )
 
     parser.add_argument("--speed", type=float, default=1.0, help="初始播放倍率")
@@ -996,6 +1108,8 @@ def parse_args() -> argparse.Namespace:
 
     if args.speed <= 0:
         parser.error("--speed 必须大于 0")
+    if args.root_body_index < 0:
+        parser.error("--root-body-index 不能为负数")
 
     return args
 
