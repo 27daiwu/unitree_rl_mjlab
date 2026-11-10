@@ -38,8 +38,11 @@ def _take_fields(obj, names, *, required=True):
     return out
 
 
-def _restore_fields(obj, saved):
+def _restore_fields(obj, saved, *, allow_missing=False):
     for name, value in saved.items():
+        if allow_missing and not hasattr(obj, name):
+            setattr(obj, name, value.to(device=obj.device).clone())
+            continue
         target = getattr(obj, name)
         if target.shape != value.shape or target.dtype != value.dtype:
             raise ValueError(f"checkpoint field shape/dtype mismatch: {name}")
@@ -60,6 +63,8 @@ def capture_env(env) -> dict:
             for name, buf in terms.items()
         }
     obs = env.observation_manager._obs_buffer
+    if obs is None:
+        raise RuntimeError("cannot save complete environment before first observation")
     return {
         "version": 1,
         "num_envs": env.num_envs,
@@ -72,7 +77,7 @@ def capture_env(env) -> dict:
         "robot": _take_fields(env.scene["robot"].data, ROBOT_FIELDS),
         "env_tensors": _take_fields(env, ENV_TENSOR_FIELDS, required=False),
         "obs_history": histories,
-        "obs_buffer": None if obs is None else {name: _copy(t) for name, t in obs.items()},
+        "obs_buffer": {name: _copy(t) for name, t in obs.items()},
         "sim_step_counter": env._sim_step_counter,
         "common_step_counter": env.common_step_counter,
     }
@@ -85,7 +90,7 @@ def restore_env(env, state: dict) -> None:
         raise ValueError("domain-randomization field set mismatch")
     _restore_fields(env.sim.model, state["model_randomization"])
     _restore_fields(env.sim.data, state["sim_data"])
-    _restore_fields(env, state["env_tensors"])
+    _restore_fields(env, state["env_tensors"], allow_missing=True)
     _restore_fields(env.scene["robot"].data, state["robot"])
     cmd = env.command_manager.get_term("motion")
     _restore_fields(cmd, state["command"])

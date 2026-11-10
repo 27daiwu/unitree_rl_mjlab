@@ -61,6 +61,8 @@ class WorldModelTrainer:
             loss.backward()
             allreduce_grads(self.wm)
             if self.finite_check: self.finite_check("world_model", "gradient", {n: p.grad for n, p in self.wm.named_parameters() if p.grad is not None}, batch)
+            pre_gn = torch.nn.utils.get_total_norm([p.grad for p in self.wm.parameters() if p.grad is not None])
+            if self.finite_check: self.finite_check("world_model", "gradient_norm_preclip", {"grad_norm": pre_gn, "loss": loss}, batch)
             gn = torch.nn.utils.clip_grad_norm_(self.wm.parameters(), self.cfg.grad_clip)
             if self.finite_check: self.finite_check("world_model", "clipped_gradient_norm", {"grad_norm": gn}, batch)
             self.opt.step()

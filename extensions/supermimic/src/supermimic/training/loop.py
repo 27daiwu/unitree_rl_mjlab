@@ -33,6 +33,17 @@ from supermimic.world_model.world_model import WorldModel
 
 class Trainer:
     CHECKPOINT_FORMAT_VERSION = 2
+
+    @staticmethod
+    def _all_finite(obj) -> bool:
+        if torch.is_tensor(obj):
+            return not obj.is_floating_point() or bool(torch.isfinite(obj).all().item())
+        if isinstance(obj, dict):
+            return all(Trainer._all_finite(value) for value in obj.values())
+        if isinstance(obj, (list, tuple)):
+            return all(Trainer._all_finite(value) for value in obj)
+        return True
+
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
@@ -130,8 +141,13 @@ class Trainer:
         for label, module in (("world_model", self.wm), ("policy", self.policy), ("critic", self.critic)):
             if not all(torch.isfinite(p).all().item() for p in module.parameters()):
                 raise FloatingPointError(f"refusing checkpoint with non-finite {label} parameters")
+        for label, opt in (("world_model", self.wm_trainer.opt), ("policy", self.policy_trainer.opt), ("critic", self.policy_trainer.critic_opt)):
+            if not self._all_finite(opt.state_dict()):
+                raise FloatingPointError(f"refusing checkpoint with non-finite {label} optimizer state")
         payload = {
                 "format_version": self.CHECKPOINT_FORMAT_VERSION,
+                "full_state": self.world == 1,
+                "world_size": self.world,
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
@@ -163,9 +179,9 @@ class Trainer:
     def _restore_rng_state(state: dict) -> None:
         random.setstate(state["python"])
         np.random.set_state(state["numpy"])
-        torch.set_rng_state(state["torch_cpu"])
+        torch.set_rng_state(state["torch_cpu"].cpu())
         if state.get("torch_cuda") and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(state["torch_cuda"])
+            torch.cuda.set_rng_state_all([v.cpu() for v in state["torch_cuda"]])
 
     def _finite_check(self, name: str, stage: str, values: dict, batch=None) -> None:
         for key, value in values.items():
@@ -177,7 +193,8 @@ class Trainer:
                 continue
             if not finite:
                 if self.is_main:
-                    diagnostic = {"format_version": 1, "iteration": self.iteration, "num_updates": self.num_updates, "optimizer": name, "stage": stage, "first_nonfinite": key, "values": {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in values.items()}, "batch": {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in (batch or {}).items()}, "state_at_detection": {"wm": self.wm.state_dict(), "policy": self.policy.state_dict(), "critic": self.critic.state_dict(), "wm_opt": self.wm_trainer.opt.state_dict(), "policy_opt": self.policy_trainer.opt.state_dict(), "critic_opt": self.policy_trainer.critic_opt.state_dict()}, "last_periodic_checkpoint": str(self.log_dir / "ckpt_latest.pt")}
+                    module = {"world_model": self.wm, "policy": self.policy, "critic": self.critic}.get(name)
+                    diagnostic = {"format_version": 1, "iteration": self.iteration, "num_updates": self.num_updates, "optimizer": name, "stage": stage, "first_nonfinite": key, "values": {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in values.items()}, "batch": {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in (batch or {}).items()}, "gradients_at_detection": {} if module is None else {n: p.grad.detach().cpu() for n, p in module.named_parameters() if p.grad is not None}, "state_at_detection": {"wm": self.wm.state_dict(), "policy": self.policy.state_dict(), "critic": self.critic.state_dict(), "wm_opt": self.wm_trainer.opt.state_dict(), "policy_opt": self.policy_trainer.opt.state_dict(), "critic_opt": self.policy_trainer.critic_opt.state_dict()}, "last_periodic_checkpoint": str(self.log_dir / "ckpt_latest.pt")}
                     path = self.log_dir / "failure_first_nonfinite.pt"
                     with path.open("xb") as out:
                         torch.save(diagnostic, out)
@@ -190,6 +207,11 @@ class Trainer:
             raise RuntimeError(f"unsupported checkpoint format version {version}")
         if version < self.CHECKPOINT_FORMAT_VERSION and self.cfg.require_full_resume:
             raise RuntimeError("legacy checkpoint lacks replay buffer, RNG, schedule and environment state; full resume refused")
+        if version >= self.CHECKPOINT_FORMAT_VERSION and (not ck.get("full_state") or ck.get("world_size") != self.world or self.world != 1):
+            raise RuntimeError("complete resume requires a single-rank checkpoint with matching world size")
+        for label in ("wm", "policy", "critic", "wm_opt", "policy_opt", "critic_opt"):
+            if not self._all_finite(ck[label]):
+                raise FloatingPointError(f"refusing to load non-finite checkpoint component: {label}")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])

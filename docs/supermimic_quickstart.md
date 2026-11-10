@@ -69,9 +69,3 @@ The extension includes the upstream numerical tests under `extensions/supermimic
 Run them with `uv run pytest tests -q` from `extensions/supermimic`. GPU-dependent
 simulation tests require an available NVIDIA driver and CUDA device. This module only
 trains and evaluates in simulation; it adds no real-robot or deployment connection.
-
-On the audit machine, CPU-only validation is PASS (`9 passed, 18 skipped`); the
-skipped tests require CUDA or external LAFAN1 data. CUDA training, checkpoint
-generation, and interactive MuJoCo playback are BLOCKED until `nvidia-smi` reports
-an available driver/device. The official PPO task registry still loads
-`Unitree-G1-Flat` in its original Python 3.11 environment.
