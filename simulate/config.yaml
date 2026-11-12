@@ -1,5 +1,5 @@
 robot: "g1"
-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
+robot_scene: "extensions/supermimic/reports/phase2_s10_dds_sim2sim_20261111/scene_g1_s10_start.xml"
 #robot: "g1_23dof"
 #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
 #robot: "h1_2"
@@ -12,7 +12,7 @@ robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
 domain_id: 0  # Domain id
 interface: "lo" # Interface
 
-use_joystick: 1 # Simulate Unitree WirelessController using a gamepad
+use_joystick: 0 # Simulate Unitree WirelessController using a gamepad
 joystick_type: "custom_switchpro" # support "xbox", "switch", and "custom_switchpro"
 joystick_device: "/dev/input/by-id/usb-057e_THUNDEROBOT_G30-event-joystick" # Stable evdev path
 joystick_bits: 16 # Some game controllers may only have 8-bit accuracy

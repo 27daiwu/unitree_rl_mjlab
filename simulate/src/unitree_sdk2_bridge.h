@@ -2,6 +2,9 @@
 
 #include <mujoco/mujoco.h>
 
+#include <algorithm>
+#include <string>
+
 #include <unitree/robot/channel/channel_publisher.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
 #include <unitree/dds_wrapper/robots/go2/go2.h>
@@ -37,6 +40,9 @@ public:
                 std::cerr << "Unsupported joystick type: " << param::config.joystick_type << std::endl;
                 exit(EXIT_FAILURE);
             }
+        } else {
+            // Keep the DDS joystick object valid for keyboard-only deployments.
+            joystick = std::make_shared<unitree::common::UnitreeJoystick>();
         }
 
     }
@@ -91,6 +97,7 @@ protected:
     int secondary_imu_acc_adr_ = -1;
 
     std::shared_ptr<unitree::common::UnitreeJoystick> joystick = nullptr;
+    double last_contact_report_ = -1.0;
 
     void _check_sensor()
     {
@@ -186,6 +193,45 @@ public:
                                     m.kp() * (m.q() - mj_data_->sensordata[i]) +
                                     m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
             }
+        }
+
+        // Local-only startup telemetry: actual MuJoCo foot/floor contacts.
+        double left_normal = 0.0, right_normal = 0.0;
+        int left_contacts = 0, right_contacts = 0;
+        for (int c = 0; c < mj_data_->ncon; ++c) {
+            const auto& contact = mj_data_->contact[c];
+            const int body1 = mj_model_->geom_bodyid[contact.geom1];
+            const int body2 = mj_model_->geom_bodyid[contact.geom2];
+            const char* name1 = mj_id2name(mj_model_, mjOBJ_BODY, body1);
+            const char* name2 = mj_id2name(mj_model_, mjOBJ_BODY, body2);
+            const std::string first = name1 ? name1 : "";
+            const std::string second = name2 ? name2 : "";
+            const bool left = (first == "left_ankle_roll_link" && body2 == 0) ||
+                              (second == "left_ankle_roll_link" && body1 == 0);
+            const bool right = (first == "right_ankle_roll_link" && body2 == 0) ||
+                               (second == "right_ankle_roll_link" && body1 == 0);
+            if (!left && !right) continue;
+            double force[6] = {};
+            mj_contactForce(mj_model_, mj_data_, c, force);
+            if (left) {
+                ++left_contacts;
+                left_normal += std::max(0.0, force[0]);
+            }
+            if (right) {
+                ++right_contacts;
+                right_normal += std::max(0.0, force[0]);
+            }
+        }
+        if (mj_data_->time - last_contact_report_ >= 0.1) {
+            std::cout << "SUPERMIMIC_CONTACT time=" << mj_data_->time
+                      << " left=" << (left_contacts > 0)
+                      << " right=" << (right_contacts > 0)
+                      << " left_normal_N=" << left_normal
+                      << " right_normal_N=" << right_normal
+                      << " left_contacts=" << left_contacts
+                      << " right_contacts=" << right_contacts
+                      << " ncon=" << mj_data_->ncon << std::endl;
+            last_contact_report_ = mj_data_->time;
         }
 
         // lowstate

@@ -589,6 +589,8 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     m = LoadModel(filename, *sim);
     if (m)
       d = mj_makeData(m);
+    if (d && m->nkey > 0)
+      mj_resetDataKeyframe(m, d, 0);  // Explicit startup-only keyframe, if supplied.
     if (d)
     {
       sim->Load(m, d, filename);
