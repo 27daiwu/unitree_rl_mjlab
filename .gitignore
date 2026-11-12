@@ -32,3 +32,4 @@ extensions/supermimic/docs
 extensions/supermimic/data
 extensions/supermimic/reports
 
+deploy/robots/g1/build*
