@@ -23,6 +23,7 @@ from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.mdp.motion_library import discover_npz
 from supermimic.eval.benchmark import load_policy_from_checkpoint
+from supermimic.tasks.registry import DEFAULT_NPZ_DIR
 
 
 class _DictPolicy:
@@ -38,7 +39,7 @@ class _DictPolicy:
 
 def main(
     ckpt: Path,
-    npz_dir: Path = Path("data/npz/lafan1"),
+    npz_dir: Path = DEFAULT_NPZ_DIR,
     clips: list[str] | None = None,
     num_envs: int = 1,
     device: str = "cuda:0",

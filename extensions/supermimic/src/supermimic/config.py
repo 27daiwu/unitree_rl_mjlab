@@ -10,10 +10,14 @@ from supermimic.policy.nets import CriticCfg, PolicyCfg
 from supermimic.world_model.wm_trainer import WMTrainerCfg
 from supermimic.world_model.world_model import WorldModelCfg
 
+# Paths resolve against the extension root so the same defaults hold whether the
+# trainer is launched from the repository root or from extensions/supermimic.
+EXT_ROOT = Path(__file__).resolve().parents[2]
+
 
 @dataclass
 class DataCfg:
-    npz_dir: Path = Path("data/npz/lafan1")
+    npz_dir: Path = EXT_ROOT / "data/npz/lafan1"
     clips: list[str] | None = None  # None = all npz in npz_dir
     limit: int | None = None
     manifest: Path | None = None  # csv with name,keep (filter_bones_seed.py output)
@@ -57,7 +61,7 @@ class ScheduleCfg:
 @dataclass
 class TrainConfig:
     run_name: str = "debug"
-    log_root: Path = Path("logs")
+    log_root: Path = EXT_ROOT / "logs"
     seed: int = 0
     device: str = "cuda:0"
     data: DataCfg = field(default_factory=DataCfg)

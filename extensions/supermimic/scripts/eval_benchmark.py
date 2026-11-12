@@ -11,9 +11,10 @@ import tyro
 
 from supermimic.envs.mdp.motion_library import discover_npz
 from supermimic.eval.benchmark import load_policy_from_checkpoint, run_benchmark, save_results, summarize
+from supermimic.tasks.registry import DEFAULT_NPZ_DIR
 
 
-def main(ckpt: Path, npz_dir: Path = Path("data/npz/lafan1"), clips: list[str] | None = None, clip_list: Path | None = None, manifest: Path | None = None, num_envs: int = 1024, device: str = "cuda:0", out: Path | None = None) -> None:
+def main(ckpt: Path, npz_dir: Path = DEFAULT_NPZ_DIR, clips: list[str] | None = None, clip_list: Path | None = None, manifest: Path | None = None, num_envs: int = 1024, device: str = "cuda:0", out: Path | None = None) -> None:
     if clip_list is not None:
         clips = [l.strip() for l in open(clip_list) if l.strip()]
     files = [str(f) for f in discover_npz(npz_dir, names=clips, manifest=manifest)]
